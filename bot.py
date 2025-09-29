@@ -23,7 +23,7 @@ async def start(update, context):
 
 async def forward_message(update, context):
     user = update.message.from_user
-    message = update.message。text 或 "非文本消息"
+    message = update.message。text or "非文本消息"  # 修正：用英文 . 和 or
     await context.bot.send_message(
         chat_id=OWNER_ID,
         text=f"来自 {user.first_name} (ID: {user.id}): {message}"
