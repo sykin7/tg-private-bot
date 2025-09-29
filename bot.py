@@ -5,7 +5,6 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import logging
 
 # --- 英文代码: 日志记录配置 ---
-# 这能帮助我们在ClawCloud日志中看到机器人的运行状态
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -72,7 +71,6 @@ def main():
     app = Application.builder().token(token).build()
 
     app.add_handler(CommandHandler('start', start))
-    # 关键改动：使用 filters.ALL 捕获所有消息
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, forward_any_message))
 
     server_thread = Thread(target=run_server, daemon=True)
@@ -83,3 +81,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
