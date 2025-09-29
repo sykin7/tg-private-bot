@@ -1,17 +1,28 @@
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 import os
 
-async def start(update, context):
-    await update.message.reply_text('欢迎！我是你的私聊机器人。')
+# 你的 Telegram 用户 ID（替换为实际 ID）
+OWNER_ID = YOUR_USER_ID  # 例如 123456789
 
-async def echo(update, context):
-    await update.message.reply_text(f'你说：{update.message.text}')
+async def start(update, context):
+    await update.message.reply_text('欢迎！我是你的专属私聊机器人。你的消息会转发给主人。')
+
+async def forward_message(update, context):
+    user = update.message.from_user
+    message = update.message.text 或 "非文本消息"
+    # 转发消息到 OWNER_ID
+    await context.bot.send_message(
+        chat_id=OWNER_ID,
+        text=f"来自 {user.first_name} (ID: {user.id}): {message}"
+    )
+    # 回复用户
+    await update.message.reply_text('消息已转发给主人！')
 
 def main():
-    token = os.getenv('BOT_TOKEN')  # 从 ClawCloud 环境变量读 token
+    token = os.getenv('BOT_TOKEN')  # 从环境变量读 Token
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler('start', start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, forward_message))
     app.run_polling()
 
 if __name__ == '__main__':
