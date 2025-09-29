@@ -23,7 +23,8 @@ async def start(update, context):
 
 async def forward_message(update, context):
     user = update.message.from_user
-    message = update.message。text or "非文本消息"  # 修正：用英文 . 和 or
+    # 修正：这里之前的中文句号 "。" 已经改成了英文的点 "."
+    message = update.message.text or "非文本消息"
     await context.bot.send_message(
         chat_id=OWNER_ID,
         text=f"来自 {user.first_name} (ID: {user.id}): {message}"
@@ -32,6 +33,10 @@ async def forward_message(update, context):
 
 def main():
     token = os.getenv('BOT_TOKEN')
+    if not token:
+        print("错误：BOT_TOKEN 环境变量未设置！")
+        return
+
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler('start', start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, forward_message))
@@ -41,6 +46,7 @@ def main():
     server_thread.start()
 
     # 启动 polling
+    print("机器人启动中...")
     app.run_polling()
 
 if __name__ == '__main__':
