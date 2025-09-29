@@ -4,16 +4,16 @@ from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import logging
 
-# Configure logging to see output
+# English Code: Configure logging to see output
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-# Your Telegram User ID (replace with your actual ID)
+# English Code: Your Telegram User ID
 OWNER_ID = 5768851426  # e.g., 123456789
 
-# A simple server for platform health checks
+# English Code: A simple server for platform health checks
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -27,24 +27,37 @@ def run_server():
     logging.info(f"Health check server starting on port {port}...")
     httpd.serve_forever()
 
-# Handler for the /start command
+# English Code: Handler for the /start command
 async def start(update, context):
-    await update.message.reply_text('Welcome! Your messages will be forwarded to the owner.')
+    # Chinese Prompt for the user
+    welcome_message = '欢迎！您发送的任何消息（包括图片、表情等）都将被转发。'
+    await update.message.reply_text(welcome_message)
 
-# Handler to forward all other text messages
-async def forward_message(update, context):
+# English Code: New handler to forward ANY type of message
+async def forward_any_message(update, context):
     user = update.message.from_user
-    message_text = update.message.text or "[This was not a text message]"
     
-    forward_text = f"Message from {user.first_name} (ID: {user.id}):\n\n{message_text}"
-    
+    # Chinese Prompt for the owner
+    info_text = f"收到来自 {user.first_name} (ID: {user.id}) 的一条消息:"
     try:
-        await context.bot.send_message(chat_id=OWNER_ID, text=forward_text)
-        await update.message.reply_text('Your message has been forwarded!')
+        # First, send a text notification to the owner
+        await context.bot。send_message(chat_id=OWNER_ID, text=info_text)
+        
+        # Then, forward the original message perfectly (preserves images, stickers, etc.)
+        await update.message.forward(chat_id=OWNER_ID)
+        
+        # Chinese Prompt for the user
+        confirmation_message = '您的消息已成功转发！'
+        await update.message.reply_text(confirmation_message)
+        logging.info(f"Successfully forwarded a message from user {user.id}")
+        
     except Exception as e:
         logging.error(f"Failed to forward message: {e}")
-        await update.message.reply_text('Sorry, an error occurred while forwarding your message.')
+        # Chinese Prompt for the user
+        error_message = '抱歉，转发您的消息时遇到了一个错误。'
+        await update.message.reply_text(error_message)
 
+# English Code: Main function
 def main():
     token = os.getenv('BOT_TOKEN')
     if not token:
@@ -54,7 +67,11 @@ def main():
     app = Application.builder().token(token).build()
 
     app.add_handler(CommandHandler('start', start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, forward_message))
+    
+    # --- KEY CHANGE IS HERE ---
+    # Instead of filters.TEXT, we now use filters.ALL to capture everything.
+    # We also call our new function 'forward_any_message'.
+    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, forward_any_message))
 
     server_thread = Thread(target=run_server, daemon=True)
     server_thread.start()
@@ -64,4 +81,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
