@@ -4,3 +4,4 @@
 docker build -t sykin/tg-private-bot:v4 .
 docker push sykin/tg-private-bot:v4
 变量添加OWNER_ID个人ID，BOT_TOKEN机器人API
+端口8080
