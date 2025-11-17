@@ -1,19 +1,19 @@
 # -*- coding: utf-8 -*-
 
-# --- V7.0 - 终极灵活版 ---
-# 1. OWNER_ID 从环境变量 "OWNER_ID" 动态读取
-# 2. SPAM_RULES_URL 从环境变量 "SPAM_RULES_URL" 动态读取
-# 3. 为 SPAM_RULES_URL 提供了智能备用 URL
-# 4. 保留 V6 所有功能 (合并自定义黑名单, 隐私转发, 健康检查)
+# --- V7.1 - 终极修正版 ---
+# 1. 修正 V7.0 中错误的 v13 库导入语句 (ModuleNotFoundError)
+# 2. 将 update_spam_rules 的类型提示改为 v20+ 兼容的 ContextTypes.DEFAULT_TYPE
+# 3. 保留 V7.0 的所有动态环境变量功能
 
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from telegram.ext.callbackcontext import CallbackContext
 import os
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import logging
 import re
 import httpx
+
+# (V7.1 修正: 删除了错误的 "from telegram.ext.callbackcontext import CallbackContext" 这一行)
 
 # --- V4版：日志记录配置 ---
 logging.basicConfig(
@@ -25,7 +25,6 @@ logger = logging.getLogger(__name__)
 # --- V7.0 终极灵活版：从环境变量读取配置 ---
 
 # 1. 机器人主人ID (必须)
-# 脚本不再硬编码，而是从环境变量读取
 OWNER_ID_STR = os.getenv('OWNER_ID')
 OWNER_ID = 0  # 临时初始化
 if not OWNER_ID_STR:
@@ -53,7 +52,8 @@ FALLBACK_SPAM_KEYWORDS = [
 
 
 # --- V6 终极版：自动更新 + 合并自定义规则 ---
-async def update_spam_rules(context: CallbackContext):
+# --- V7.1 修正: 将 "context: CallbackContext" 修改为 v20 兼容的 "context: ContextTypes.DEFAULT_TYPE" ---
+async def update_spam_rules(context: ContextTypes.DEFAULT_TYPE):
     logger.info("正在尝试更新广告屏蔽规则...")
     
     # 1. 从 context 中获取自定义关键词列表 (在 main() 中设置的)
@@ -127,7 +127,7 @@ async def start(update, context):
     welcome_message = '欢迎！您发送的任何消息都将被转发给管理员。'
     await update.message.reply_text(welcome_message)
 
-# --- 核心功能1 (V5 升级版): 转发普通用户的消息给主人 (增加广告检查) ---
+# --- V7.1 修正: 检查关键词是否为空 ---
 async def forward_to_owner(update, context):
     user = update.message.from_user
     message = update.message
@@ -140,7 +140,7 @@ async def forward_to_owner(update, context):
         
         is_spam_flag = False
         for keyword in spam_keywords:
-            if keyword: # 确保关键词不是空字符串
+            if keyword: # V7.1 增加检查: 确保关键词不是空字符串
                 if keyword in text_lower:
                     is_spam_flag = True
                     break
@@ -154,7 +154,6 @@ async def forward_to_owner(update, context):
             return
 
     # (如果不是广告，则执行V4的转发逻辑)
-    # V7 使用从环境变量加载的 OWNER_ID
     info_text = f"👇 收到来自 {user.first_name} (ID: {user.id}) 的一条新消息:"
     try:
         await context.bot.send_message(chat_id=OWNER_ID, text=info_text)
@@ -164,12 +163,12 @@ async def forward_to_owner(update, context):
     try:
         await message.forward(chat_id=OWNER_ID)
         confirmation_message = '您的消息已成功发送！'
-        await message.reply_text(confirmation_message)
+        await update.message.reply_text(confirmation_message) # V7.1 修正: 使用 update.message.reply_text
         logger.info(f"Successfully forwarded message from user {user.id} to owner {OWNER_ID}")
     except Exception as e:
         logger.error(f"Error forwarding message: {e}")
         error_message = '抱歉，发送消息时遇到错误。'
-        await message.reply_text(error_message)
+        await update.message.reply_text(error_message) # V7.1 修正: 使用 update.message.reply_text
 
 # --- 核心功能2 (V4终极版): 处理主人的回复，兼容隐私模式 ---
 async def reply_to_user(update, context):
@@ -198,13 +197,12 @@ async def reply_to_user(update, context):
 
 # --- 主函数 ---
 def main():
-    VERSION = "V7.0 - 终极灵活版 (动态配置)"
+    VERSION = "V7.1 - 终极修正版 (修正v20库导入错误)"
     logger.info(f"==========================================")
     logger.info(f"机器人正在启动... 版本: {VERSION}")
     logger.info(f"==========================================")
     
     # V7.0: BOT_TOKEN 是唯一在 main() 中检查的环境变量
-    # OWNER_ID 和 SPAM_RULES_URL 已经在脚本顶部全局加载
     token = os.getenv('BOT_TOKEN')
     if not token:
         logger.error("致命错误: 环境变量 BOT_TOKEN 未设置!")
@@ -237,7 +235,6 @@ def main():
     # --- V5 任务调度结束 ---
 
     # --- V7.0 处理器注册 ---
-    # 注意：这里的 OWNER_ID 是 V7 脚本顶部从环境变量中读取的
     app.add_handler(CommandHandler('start', start))
     app.add_handler(MessageHandler(filters.User(user_id=OWNER_ID) & filters.REPLY & ~filters.COMMAND, reply_to_user))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND & ~filters.User(user_id=OWNER_ID), forward_to_owner))
