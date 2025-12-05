@@ -5,7 +5,7 @@ on:
     branches: [ "main" ]
     # 只有当以下文件发生变化时才触发构建，避免改个README也构建一次
     paths:
-      - 'main.py'
+      - 'bot.py'
       - 'Dockerfile'
       - 'requirements.txt'
       - '.github/workflows/**'
