@@ -10,12 +10,11 @@ import threading
 from collections import defaultdict, OrderedDict
 import random
 
-# ================= 配置区域 (最终定制：已修改时间和随机封禁范围) =================
+# ================= 配置区域 (V28.0 保持不变) =================
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_ID_STR = os.environ.get('ADMIN_ID') or os.environ.get('OWNER_ID')
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
 
-# 默认垃圾词库
 FALLBACK_SPAM_KEYWORDS = [
     "u币", "USDT", "泰达币", "跑分", "博彩", "兼职", "刷单", "各行各业", "代开", 
     "发票", "迷药", "枪支", "色情", "裸聊", "办证", "查询", "定位", "监听",
@@ -32,11 +31,9 @@ MAX_MAP_SIZE = 1000
 MIN_NUM = 10
 MAX_NUM = 99
 
-# V28.0 修改：人机验证时间限制改为 60 秒
-CAPTCHA_TIMEOUT = 60  # 60秒 = 1分钟
-# V28.0 修改：随机封禁时间范围（10分钟到30分钟）
-MIN_BAN_DURATION = 600     # 10分钟
-MAX_BAN_DURATION = 1800    # 30分钟
+CAPTCHA_TIMEOUT = 60
+MIN_BAN_DURATION = 600
+MAX_BAN_DURATION = 1800
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -53,7 +50,7 @@ VERIFIED_USERS = set()
 PENDING_CAPTCHA = {} 
 USER_BAN_STATUS = {}
 
-# ================= 核心定制类：FIFO 容量限制字典 (V24.0 原汁原味保留) =================
+# ================= 核心定制类：FIFO 容量限制字典 (V24.0 保留) =================
 
 class SizedOrderedDict(OrderedDict):
     def __init__(self, maxsize=1000, *args, **kwds):
@@ -69,7 +66,21 @@ class SizedOrderedDict(OrderedDict):
 
 MESSAGE_MAP = SizedOrderedDict(MAX_MAP_SIZE)
 
-# ================= 核心功能函数 (V27.0 逻辑不变) =================
+# ================= 核心功能函数 (V31.0 标识符修改) =================
+
+def get_user_identifier(user):
+    user_id = user.id
+    username = user.username
+    
+    if username:
+        name_part = f"@{username}"
+    else:
+        first_name = user.first_name if user.first_name else ""
+        last_name = user.last_name if user.last_name else ""
+        name_part = f"{first_name} {last_name}".strip() if first_name or last_name else "用户"
+        
+    # V31.0 修改：移除方括号 []，使观感更简洁
+    return f"\n👤 {name_part} ({user_id})"
 
 def update_spam_rules_thread():
     global spam_keywords
@@ -151,10 +162,8 @@ def generate_and_send_captcha(user_id):
         if now - timestamp < CAPTCHA_TIMEOUT:
             return False 
         else:
-            # 验证码过期，执行禁用逻辑
             del PENDING_CAPTCHA[user_id]
             
-            # V28.0 关键修改：随机生成封禁时间
             random_ban_time = random.randint(MIN_BAN_DURATION, MAX_BAN_DURATION)
             USER_BAN_STATUS[user_id] = now + random_ban_time
             logging.warning(f"CAPTCHA timeout for {user_id}. User banned for {random_ban_time}s.")
@@ -183,14 +192,13 @@ def generate_and_send_captcha(user_id):
     logging.info(f"New CAPTCHA for {user_id}: {question} -> {answer}")
 
     try:
-        # V28.0 修改：验证提示时间改为 60 秒
         bot.send_message(user_id, f"🤖 **安全验证:** 为了证明您不是机器人，请在 **{CAPTCHA_TIMEOUT} 秒** 内回复以下算式的**数字答案**:\n\n`{question}`\n\n您无需等待或重发您的原始消息，只需直接回复答案即可。", parse_mode="Markdown")
     except apihelper.ApiTelegramException as e:
         logging.error(f"Failed to send CAPTCHA message to {user_id}: {e}")
     
     return False
 
-# ================= 消息处理逻辑 (V27.0 逻辑不变) =================
+# ================= 消息处理逻辑 (V31.0 转发逻辑不变，使用新的标识符) =================
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
@@ -205,10 +213,8 @@ def handle_captcha_answer(message):
         expected_answer, timestamp = PENDING_CAPTCHA[user_id]
         
         if now - timestamp > CAPTCHA_TIMEOUT:
-            # 超时处理
             del PENDING_CAPTCHA[user_id]
             
-            # V28.0 关键修改：随机生成封禁时间
             random_ban_time = random.randint(MIN_BAN_DURATION, MAX_BAN_DURATION)
             USER_BAN_STATUS[user_id] = now + random_ban_time
             
@@ -272,23 +278,27 @@ def handle_user_message(message):
     
     if not is_spam(check_content):
         sent_msg = None
+        
+        identifier = get_user_identifier(user)
+        caption_or_text = message.caption or message.text or ""
 
         try:
             if message.content_type == 'text':
-                sent_msg = bot.send_message(ADMIN_ID, message.text) 
+                sent_msg = bot.send_message(ADMIN_ID, message.text + identifier) 
             elif message.content_type == 'photo':
-                sent_msg = bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=message.caption)
+                sent_msg = bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=(caption_or_text + identifier))
             elif message.content_type == 'video':
-                sent_msg = bot.send_video(ADMIN_ID, message.video.file_id, caption=message.caption)
+                sent_msg = bot.send_video(ADMIN_ID, message.video.file_id, caption=(caption_or_text + identifier))
             elif message.content_type == 'document':
-                sent_msg = bot.send_document(ADMIN_ID, message.document.file_id, caption=message.caption)
+                sent_msg = bot.send_document(ADMIN_ID, message.document.file_id, caption=(caption_or_text + identifier))
             elif message.content_type == 'voice':
-                sent_msg = bot.send_voice(ADMIN_ID, message.voice.file_id, caption=message.caption)
+                sent_msg = bot.send_voice(ADMIN_ID, message.voice.file_id, caption=(caption_or_text + identifier))
             elif message.content_type == 'animation':
-                sent_msg = bot.send_animation(ADMIN_ID, message.animation.file_id, caption=message.caption)
+                sent_msg = bot.send_animation(ADMIN_ID, message.animation.file_id, caption=(caption_or_text + identifier))
             elif message.content_type == 'sticker':
                 sent_msg = bot.send_sticker(ADMIN_ID, message.sticker.file_id)
-                msg_for_map = bot.send_message(ADMIN_ID, "💬 (回复此消息即回复用户)")
+                map_text = f"💬 (回复此消息即回复用户) {identifier.replace('\n', ' ')}"
+                msg_for_map = bot.send_message(ADMIN_ID, map_text)
                 MESSAGE_MAP[msg_for_map.message_id] = user.id
                 return
 
@@ -337,7 +347,7 @@ def handle_admin_reply(message):
         bot.reply_to(message, f"❌ 发送失败 (未知错误): {e}")
 
 if __name__ == "__main__":
-    logging.info("🚀 Bot started (V28.0 Random Ban Edition)...")
+    logging.info("🚀 Bot started (V31.0 Tight and Clean Identifier Edition)...")
     
     update_thread = threading.Thread(target=update_spam_rules_thread, daemon=True)
     update_thread.start()
