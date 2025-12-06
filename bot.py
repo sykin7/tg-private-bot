@@ -9,11 +9,11 @@ from collections import defaultdict
 
 # ================= 配置区域 =================
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
-
-# 修复点1：同时兼容 ADMIN_ID 和 OWNER_ID，防止填错变量名导致不工作
+# 兼容 ADMIN_ID 和 OWNER_ID
 ADMIN_ID_STR = os.environ.get('ADMIN_ID') or os.environ.get('OWNER_ID')
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
 
+# 默认垃圾词库
 FALLBACK_SPAM_KEYWORDS = [
     "u币", "USDT", "泰达币", "跑分", "博彩", "兼职", "刷单", "各行各业", "代开", 
     "发票", "迷药", "枪支", "色情", "裸聊", "办证", "查询", "定位", "监听",
@@ -29,7 +29,7 @@ MAX_MSGS_PER_WINDOW = 5
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 if not BOT_TOKEN or not ADMIN_ID:
-    logging.error("Error: BOT_TOKEN and ADMIN_ID (or OWNER_ID) must be set.")
+    logging.error("Error: BOT_TOKEN and ADMIN_ID must be set.")
     exit(1)
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -72,7 +72,6 @@ def check_flood(user_id):
 
 def is_spam(text):
     if not text: return False
-    # 修复点2：如果规则转换后是空字符串（纯符号），直接跳过，防止拦截所有消息
     clean_text = re.sub(r'\s+|[^\w]', '', text).lower()
     for keyword in spam_keywords:
         clean_keyword = re.sub(r'\s+|[^\w]', '', keyword).lower()
@@ -83,10 +82,12 @@ def is_spam(text):
             return True
     return False
 
+# ⚡️ 修改点：单行紧凑页脚
 def get_sender_footer(user):
     first = user.first_name if user.first_name else "User"
     safe_first = re.sub(r'[^\w\s]', '', first)
-    return f"\n----------------\n👤 {safe_first} | 🆔 ID: {user.id}"
+    # 只有一个 \n，换行后紧接着显示 [ 名字 | ID ]
+    return f"\n[ {safe_first} | ID: {user.id} ]"
 
 def smart_truncate(text, footer, max_length):
     if not text: return footer
@@ -134,7 +135,8 @@ def handle_user_message(message):
             bot.send_animation(ADMIN_ID, message.animation.file_id, caption=caption)
         elif message.content_type == 'sticker':
             bot.send_sticker(ADMIN_ID, message.sticker.file_id)
-            bot.send_message(ADMIN_ID, f"👆 收到贴纸 (请回复这条消息)\n{footer}")
+            # 贴纸提示也改成了紧凑模式
+            bot.send_message(ADMIN_ID, f"👆 收到贴纸 (请回复本条){footer}")
     except Exception as e:
         logging.error(f"Forward failed: {e}")
 
@@ -143,7 +145,7 @@ def handle_unknown_message(message):
     try:
         user = message.from_user
         footer = get_sender_footer(user)
-        bot.send_message(ADMIN_ID, f"⚠️ 收到未知消息类型 ({message.content_type})\n{footer}")
+        bot.send_message(ADMIN_ID, f"⚠️ 未知类型消息 ({message.content_type}){footer}")
     except:
         pass
 
@@ -169,7 +171,7 @@ def handle_admin_reply(message):
         bot.reply_to(message, f"❌ 发送失败: {e}")
 
 if __name__ == "__main__":
-    logging.info("🚀 Bot started (V16.6 Critical Fix)...")
+    logging.info("🚀 Bot started (V16.8 Compact Edition)...")
     
     update_thread = threading.Thread(target=update_spam_rules_thread, daemon=True)
     update_thread.start()
