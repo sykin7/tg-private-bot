@@ -1,0 +1,5 @@
+python-telegram-bot
+httpx
+pydantic
+pydantic-settings
+aiosqlite
