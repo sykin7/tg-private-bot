@@ -34,6 +34,7 @@ MAX_NUM = 99
 CAPTCHA_TIMEOUT = 60
 MIN_BAN_DURATION = 600
 MAX_BAN_DURATION = 1800
+DEFAULT_MANUAL_BAN_DURATION = 1800 # 手动禁用默认 30 分钟
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -79,7 +80,6 @@ def get_user_identifier(user):
         last_name = user.last_name if user.last_name else ""
         name_part = f"{first_name} {last_name}".strip() if first_name or last_name else "用户"
         
-    # V31.0 修改：移除方括号 []，使观感更简洁
     return f"\n👤 {name_part} ({user_id})"
 
 def update_spam_rules_thread():
@@ -198,7 +198,7 @@ def generate_and_send_captcha(user_id):
     
     return False
 
-# ================= 消息处理逻辑 (V31.0 转发逻辑不变，使用新的标识符) =================
+# ================= 消息处理逻辑 (V32.0 新增转发反馈) =================
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
@@ -248,30 +248,31 @@ def handle_captcha_answer(message):
                      func=lambda m: m.chat.type == 'private' and m.from_user.id != ADMIN_ID)
 def handle_user_message(message):
     user = message.from_user
+    user_id = user.id
     
-    if check_ban_status(user.id):
+    if check_ban_status(user_id):
         try:
-            bot.send_message(user.id, "🚫 您当前处于禁用状态，请稍后再试。")
+            bot.send_message(user_id, "🚫 您当前处于禁用状态，请稍后再试。")
         except apihelper.ApiTelegramException:
             pass
         return
 
-    if user.id in PENDING_CAPTCHA and message.content_type == 'text':
+    if user_id in PENDING_CAPTCHA and message.content_type == 'text':
          handle_captcha_answer(message)
          return
     
-    if not generate_and_send_captcha(user.id):
+    if not generate_and_send_captcha(user_id):
         return
         
-    if check_flood(user.id): 
+    if check_flood(user_id): 
         try:
-            bot.send_message(user.id, "🛑 您的消息发送过于频繁，请稍后再试。")
+            bot.send_message(user_id, "🛑 您的消息发送过于频繁，请稍后再试。")
         except apihelper.ApiTelegramException:
             pass
         return
 
     if message.content_type in ['contact', 'location', 'poll']:
-        send_interception_feedback(user.id, reason=f"禁止的{message.content_type}类型")
+        send_interception_feedback(user_id, reason=f"禁止的{message.content_type}类型")
         return
 
     check_content = message.text or message.caption or ""
@@ -299,17 +300,22 @@ def handle_user_message(message):
                 sent_msg = bot.send_sticker(ADMIN_ID, message.sticker.file_id)
                 map_text = f"💬 (回复此消息即回复用户) {identifier.replace('\n', ' ')}"
                 msg_for_map = bot.send_message(ADMIN_ID, map_text)
-                MESSAGE_MAP[msg_for_map.message_id] = user.id
+                MESSAGE_MAP[msg_for_map.message_id] = user_id
+                
+                # V32.0 新增：贴纸转发成功反馈
+                bot.send_message(user_id, "✅ 您的消息（贴纸）已送达管理员，请勿重复发送。")
                 return
 
             if sent_msg:
-                MESSAGE_MAP[sent_msg.message_id] = user.id
+                MESSAGE_MAP[sent_msg.message_id] = user_id
+                # V32.0 新增：消息转发成功反馈
+                bot.send_message(user_id, "✅ 您的消息已送达管理员，请耐心等待回复。请勿重复发送。")
 
         except Exception as e:
             logging.error(f"Forward failed: {e}")
             
     else:
-        send_interception_feedback(user.id)
+        send_interception_feedback(user_id)
         return
 
 @bot.message_handler(func=lambda m: m.chat.type == 'private' and m.from_user.id != ADMIN_ID, content_types=None)
@@ -335,6 +341,7 @@ def handle_admin_reply(message):
         
         if target_id:
             bot.copy_message(chat_id=target_id, from_chat_id=ADMIN_ID, message_id=message.message_id)
+            # V32.0 移除回复确认（用户明确不要）
         else:
             bot.reply_to(message, "⚠️ 错误：该消息的用户 ID 映射已失效（可能原因：已回复过一次或消息太旧被淘汰）。")
 
@@ -346,8 +353,89 @@ def handle_admin_reply(message):
     except Exception as e:
         bot.reply_to(message, f"❌ 发送失败 (未知错误): {e}")
 
+# ================= V32.0 新增：管理员手动控制命令 =================
+
+@bot.message_handler(commands=['ban', 'unban', 'check'], func=lambda m: m.chat.id == ADMIN_ID and m.reply_to_message)
+def handle_admin_commands(message):
+    admin_id = message.from_user.id
+    command = message.text.split()[0].lower()
+    
+    # 1. 权限检查：确保是管理员本人
+    if admin_id != ADMIN_ID:
+        return
+
+    # 2. 获取目标用户 ID
+    original_msg = message.reply_to_message
+    target_id = MESSAGE_MAP.get(original_msg.message_id)
+    
+    if not target_id:
+        bot.reply_to(message, "⚠️ 错误：无法从回复的消息中找到目标用户 ID，请确保您回复的是用户转发的最新消息。")
+        return
+
+    # 3. 处理 /ban 命令
+    if command.startswith('/ban'):
+        duration = DEFAULT_MANUAL_BAN_DURATION
+        
+        # 尝试从命令中解析禁用时间
+        parts = message.text.split()
+        if len(parts) > 1 and parts[1].isdigit():
+            duration = int(parts[1])
+            if duration <= 0:
+                bot.reply_to(message, "🚫 禁用时间必须大于 0 秒。")
+                return
+
+        ban_until = time.time() + duration
+        USER_BAN_STATUS[target_id] = ban_until
+        
+        duration_str = f"{duration} 秒"
+        if duration >= 3600:
+            duration_str = f"{duration / 3600:.2f} 小时"
+        elif duration >= 60:
+            duration_str = f"{duration / 60:.2f} 分钟"
+            
+        bot.reply_to(message, f"✅ 已成功禁用用户 ID: {target_id}，禁用时长为 {duration_str}。")
+        logging.warning(f"Admin {admin_id} manually banned user {target_id} for {duration}s.")
+        
+        try:
+            bot.send_message(target_id, f"🚫 您已被管理员手动禁用，禁用到期时间为 {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ban_until))}。")
+        except apihelper.ApiTelegramException:
+            pass
+            
+    # 4. 处理 /unban 命令
+    elif command.startswith('/unban'):
+        if target_id in USER_BAN_STATUS:
+            del USER_BAN_STATUS[target_id]
+            bot.reply_to(message, f"✅ 已成功解除对用户 ID: {target_id} 的禁用。")
+            logging.info(f"Admin {admin_id} manually unbanned user {target_id}.")
+            try:
+                bot.send_message(target_id, "✅ 您已被管理员解除禁用，现在可以发送消息了。")
+            except apihelper.ApiTelegramException:
+                pass
+        else:
+            bot.reply_to(message, f"ℹ️ 用户 ID: {target_id} 当前并未被禁用。")
+
+    # 5. 处理 /check 命令
+    elif command.startswith('/check'):
+        if target_id in USER_BAN_STATUS:
+            remaining_time = USER_BAN_STATUS[target_id] - time.time()
+            if remaining_time > 0:
+                duration_str = f"{remaining_time:.2f} 秒"
+                if remaining_time >= 3600:
+                    duration_str = f"{remaining_time / 3600:.2f} 小时"
+                elif remaining_time >= 60:
+                    duration_str = f"{remaining_time / 60:.2f} 分钟"
+                
+                bot.reply_to(message, f"❌ 用户 ID: {target_id} 当前处于禁用状态，剩余时间约 {duration_str}。")
+            else:
+                del USER_BAN_STATUS[target_id]
+                bot.reply_to(message, f"✅ 用户 ID: {target_id} 当前未被禁用。")
+        else:
+            bot.reply_to(message, f"✅ 用户 ID: {target_id} 当前未被禁用。")
+
+# ================= 启动逻辑 =================
+
 if __name__ == "__main__":
-    logging.info("🚀 Bot started (V31.0 Tight and Clean Identifier Edition)...")
+    logging.info("🚀 Bot started (V32.0 Admin Control & Feedback Edition)...")
     
     update_thread = threading.Thread(target=update_spam_rules_thread, daemon=True)
     update_thread.start()
