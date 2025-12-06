@@ -18,15 +18,17 @@ cached_spam_keywords = set(config.SPAM_KEYWORDS)
 
 def is_spam(text):
     if not text: return False
-    safe_text = text[:1000]
+    
+    safe_text = text[:2000]
     text_normalized = unicodedata.normalize('NFKC', safe_text).lower()
     
     for kw in cached_spam_keywords:
         if kw in text_normalized: return True
         
-    cleaned = re.sub(r'[\W_]+', '', text_normalized)
+    cleaned = re.sub(r'[^\w\u4e00-\u9fa5]+', '', text_normalized)
     for kw in cached_spam_keywords:
         if kw.isalnum() and kw in cleaned: return True
+            
     return False
 
 async def delete_and_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -38,26 +40,27 @@ async def delete_and_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=target_message.chat_id,
                 user_id=target_message.from_user.id
             )
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Ban failed: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message or update.edited_message
+    
     if not message or not message.from_user:
         return
 
     user = message.from_user
+    
     if user.id == config.ADMIN_ID:
         return
 
     text = message.text or message.caption or ""
     
     if is_spam(text):
+        print(f"Spam detected: {user.id}")
         await delete_and_ban(update, context)
         return
 
-    # 只要是编辑过的消息，如果没通过上面的广告检查，就不计入频率限制了，直接放行
-    # 防止用户修改错别字也被计入频率惩罚
     if update.edited_message:
         return
 
@@ -71,6 +74,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if status == "BANNED":
         await message.delete()
     elif status == "BANNED_NOW":
+        print(f"Rate limit triggered: {user.id}")
         await delete_and_ban(update, context)
     elif status == "ERROR":
         pass
@@ -98,11 +102,17 @@ async def main():
     
     bot_app.add_handler(CommandHandler("start", start))
     
-    # 这里增加了 filters.UpdateType.EDITED_MESSAGE，让它能监听到消息修改
-    common_filter = (filters.TEXT | filters.CAPTION | filters.PHOTO | filters.VIDEO | filters.Sticker.ALL | filters.Document.ALL)
+    combined_filter = (
+        filters.TEXT | 
+        filters.CAPTION | 
+        filters.PHOTO | 
+        filters.VIDEO | 
+        filters.Sticker.ALL | 
+        filters.Document.ALL
+    )
     
     bot_app.add_handler(MessageHandler(
-        common_filter | filters.UpdateType.EDITED_MESSAGE, 
+        combined_filter | filters.UpdateType.EDITED_MESSAGE, 
         handle_message
     ))
     
