@@ -34,7 +34,7 @@ MAX_NUM = 99
 CAPTCHA_TIMEOUT = 60
 MIN_BAN_DURATION = 600
 MAX_BAN_DURATION = 1800
-DEFAULT_MANUAL_BAN_DURATION = 1800 # 手动禁用默认 30 分钟
+DEFAULT_MANUAL_BAN_DURATION = 1800
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -198,7 +198,7 @@ def generate_and_send_captcha(user_id):
     
     return False
 
-# ================= 消息处理逻辑 (V32.0 转发反馈) =================
+# ================= 消息处理逻辑 (V32.2 语法终结版) =================
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
@@ -298,18 +298,15 @@ def handle_user_message(message):
                 sent_msg = bot.send_animation(ADMIN_ID, message.animation.file_id, caption=(caption_or_text + identifier))
             elif message.content_type == 'sticker':
                 sent_msg = bot.send_sticker(ADMIN_ID, message.sticker.file_id)
-                # V32.1 修复：将全角符号【】（）修复为半角符号{}()
                 map_text = f"💬 (回复此消息即回复用户) {identifier.replace('\n', ' ')}"
                 msg_for_map = bot.send_message(ADMIN_ID, map_text)
                 MESSAGE_MAP[msg_for_map.message_id] = user_id
                 
-                # V32.0 新增：贴纸转发成功反馈
                 bot.send_message(user_id, "✅ 您的消息（贴纸）已送达管理员，请勿重复发送。")
                 return
 
             if sent_msg:
                 MESSAGE_MAP[sent_msg.message_id] = user_id
-                # V32.0 新增：消息转发成功反馈
                 bot.send_message(user_id, "✅ 您的消息已送达管理员，请耐心等待回复。请勿重复发送。")
 
         except Exception as e:
@@ -342,7 +339,6 @@ def handle_admin_reply(message):
         
         if target_id:
             bot.copy_message(chat_id=target_id, from_chat_id=ADMIN_ID, message_id=message.message_id)
-            # V32.0 移除回复确认
         else:
             bot.reply_to(message, "⚠️ 错误：该消息的用户 ID 映射已失效（可能原因：已回复过一次或消息太旧被淘汰）。")
 
@@ -361,11 +357,9 @@ def handle_admin_commands(message):
     admin_id = message.from_user.id
     command = message.text.split()[0].lower()
     
-    # 1. 权限检查
     if admin_id != ADMIN_ID:
         return
 
-    # 2. 获取目标用户 ID
     original_msg = message.reply_to_message
     target_id = MESSAGE_MAP.get(original_msg.message_id)
     
@@ -373,7 +367,6 @@ def handle_admin_commands(message):
         bot.reply_to(message, "⚠️ 错误：无法从回复的消息中找到目标用户 ID，请确保您回复的是用户转发的最新消息。")
         return
 
-    # 3. 处理 /ban 命令
     if command.startswith('/ban'):
         duration = DEFAULT_MANUAL_BAN_DURATION
         
@@ -401,7 +394,6 @@ def handle_admin_commands(message):
         except apihelper.ApiTelegramException:
             pass
             
-    # 4. 处理 /unban 命令
     elif command.startswith('/unban'):
         if target_id in USER_BAN_STATUS:
             del USER_BAN_STATUS[target_id]
@@ -414,7 +406,6 @@ def handle_admin_commands(message):
         else:
             bot.reply_to(message, f"ℹ️ 用户 ID: {target_id} 当前并未被禁用。")
 
-    # 5. 处理 /check 命令
     elif command.startswith('/check'):
         if target_id in USER_BAN_STATUS:
             remaining_time = USER_BAN_STATUS[target_id] - time.time()
@@ -435,7 +426,7 @@ def handle_admin_commands(message):
 # ================= 启动逻辑 =================
 
 if __name__ == "__main__":
-    logging.info("🚀 Bot started (V32.1 修复版)...")
+    logging.info("🚀 Bot started (V32.2 Syntax Finalized Edition)...")
     
     update_thread = threading.Thread(target=update_spam_rules_thread, daemon=True)
     update_thread.start()
