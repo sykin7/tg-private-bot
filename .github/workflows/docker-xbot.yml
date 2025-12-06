@@ -5,7 +5,7 @@ on:
     branches: [ "main" ]
     paths:
       - 'my_bot/**'
-      - '.github/workflows/build-my-bot.yml'
+      - '.github/workflows/docker-xbot.yml'
   workflow_dispatch:
 
 env:
