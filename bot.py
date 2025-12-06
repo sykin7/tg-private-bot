@@ -10,7 +10,7 @@ from collections import defaultdict
 # 1. 从环境变量获取 Token
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 
-# 2. 管理员 ID (必须填对)
+# 2. 管理员 ID
 ADMIN_ID_STR = os.environ.get('ADMIN_ID')
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
 
@@ -31,7 +31,6 @@ MAX_MSGS_PER_WINDOW = 5
 
 # ===========================================
 
-# 初始化日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 if not BOT_TOKEN or not ADMIN_ID:
@@ -48,7 +47,6 @@ user_flood_control = defaultdict(list)
 # ----------------- 辅助工具函数 -----------------
 
 def update_spam_rules():
-    """更新垃圾词库"""
     global spam_keywords, last_update_time
     if time.time() - last_update_time < 3600: return
     try:
@@ -64,7 +62,6 @@ def update_spam_rules():
         logging.error(f"❌ 更新词库出错: {e}")
 
 def check_flood(user_id):
-    """防炸群检测"""
     now = time.time()
     timestamps = user_flood_control[user_id]
     valid_timestamps = [t for t in timestamps if now - t < FLOOD_WINDOW]
@@ -76,7 +73,6 @@ def check_flood(user_id):
     return False
 
 def is_spam(text):
-    """垃圾广告检测"""
     if not text: return False
     update_spam_rules()
     for keyword in spam_keywords:
@@ -86,92 +82,72 @@ def is_spam(text):
     return False
 
 def get_sender_footer(user):
-    """生成 ID 小尾巴"""
     first = user.first_name if user.first_name else "用户"
     return f"\n\n----------------\n👤 {first} | 🆔 ID: {user.id}"
 
-# ----------------- 消息处理逻辑 -----------------
+# ----------------- 消息处理逻辑 (用户发给你的) -----------------
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     bot.reply_to(message, "👋 您好！请直接发送消息，我会转发给管理员。")
 
-# 接收所有类型的消息 (文字、图片、视频、语音、文档、贴纸)
 @bot.message_handler(content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'sticker'], 
                      func=lambda m: m.chat.type == 'private' and m.from_user.id != ADMIN_ID)
 def handle_user_message(message):
     user = message.from_user
-    
-    # 1. 防炸群
     if check_flood(user.id): return
-
-    # 2. 垃圾检测 (只检测文字和说明文字)
+    
     check_content = message.text or message.caption or ""
-    if is_spam(check_content):
-        return
+    if is_spam(check_content): return
 
-    # 3. 构建包含 ID 的小尾巴
     footer = get_sender_footer(user)
 
     try:
-        # === 分类处理，实现“一条消息” ===
-        
-        # A. 纯文字
         if message.content_type == 'text':
-            # 直接把 ID 拼接到文字后面
             bot.send_message(ADMIN_ID, message.text + footer)
-
-        # B. 图片 (Photo)
         elif message.content_type == 'photo':
-            # 获取最高清的一张图
             photo_id = message.photo[-1].file_id
             caption = (message.caption or "") + footer
             bot.send_photo(ADMIN_ID, photo_id, caption=caption)
-
-        # C. 视频 (Video)
         elif message.content_type == 'video':
             caption = (message.caption or "") + footer
             bot.send_video(ADMIN_ID, message.video.file_id, caption=caption)
-
-        # D. 文件/文档 (Document)
         elif message.content_type == 'document':
             caption = (message.caption or "") + footer
             bot.send_document(ADMIN_ID, message.document.file_id, caption=caption)
-            
-        # E. 语音 (Voice)
         elif message.content_type == 'voice':
             caption = (message.caption or "") + footer
             bot.send_voice(ADMIN_ID, message.voice.file_id, caption=caption)
-
-        # F. 贴纸/表情包 (Sticker) - 特殊情况
-        # Telegram 禁止给贴纸加文字说明，所以必须分两条发
         elif message.content_type == 'sticker':
             bot.send_sticker(ADMIN_ID, message.sticker.file_id)
-            # 紧跟一条带有 ID 的小提示，方便你回复
             bot.send_message(ADMIN_ID, f"👆 收到一个表情包\n{footer}")
-
     except Exception as e:
         logging.error(f"❌ 转发消息失败: {e}")
 
-# ----------------- 管理员回复逻辑 -----------------
+# ----------------- 管理员回复逻辑 (你发给用户的) -----------------
 
-@bot.message_handler(func=lambda m: m.chat.id == ADMIN_ID and m.reply_to_message)
+# 🔥 修复点在这里：增加了 content_types 参数，让你能回复表情、图片、视频、语音等所有类型
+@bot.message_handler(content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'sticker'],
+                     func=lambda m: m.chat.id == ADMIN_ID and m.reply_to_message)
 def handle_admin_reply(message):
     """管理员回复用户的消息"""
     try:
         original_msg = message.reply_to_message
         
-        # 1. 尝试从【文字内容】或【图片/视频说明】中提取 ID
-        # 我们要找的内容是： "🆔 ID: 12345678"
+        # 提取目标 ID
         content_to_search = original_msg.text or original_msg.caption or ""
-        
         match = re.search(r"ID:\s*(\d+)", content_to_search)
         
         if match:
             target_id = int(match.group(1))
-            # 复制管理员的消息给用户
+            # 这里的 copy_message 会自动处理所有类型（包括贴纸、图片、文字）
             bot.copy_message(chat_id=target_id, from_chat_id=ADMIN_ID, message_id=message.message_id)
-            bot.reply_to(message, "✅ 已回复")
+            
+            # 为了不打扰你，回复表情包时不弹“已回复”的文字提示，只在日志里记一下
+            # 如果是文字回复，可以在这里加个 feedback
+            if message.content_type == 'text':
+                pass # 你发文字时，界面上会有 sending 状态，就不多发消息打扰你了
+            
         else:
             bot.reply_to(message, "⚠️ 无法回复：找不到用户 ID。\n请确保你回复的是带有 '🆔 ID: xxx' 的那条消息。")
 
@@ -179,7 +155,7 @@ def handle_admin_reply(message):
         bot.reply_to(message, f"❌ 发送失败: {e}")
 
 if __name__ == "__main__":
-    logging.info("🚀 机器人已启动 (V16.0 单条消息合并版)...")
+    logging.info("🚀 机器人已启动 (V16.1 修复管理员回复贴纸问题)...")
     try: bot.remove_webhook()
     except: pass
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
