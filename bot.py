@@ -198,7 +198,7 @@ def generate_and_send_captcha(user_id):
     
     return False
 
-# ================= 消息处理逻辑 (V32.0 新增转发反馈) =================
+# ================= 消息处理逻辑 (V32.0 转发反馈) =================
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
@@ -298,6 +298,7 @@ def handle_user_message(message):
                 sent_msg = bot.send_animation(ADMIN_ID, message.animation.file_id, caption=(caption_or_text + identifier))
             elif message.content_type == 'sticker':
                 sent_msg = bot.send_sticker(ADMIN_ID, message.sticker.file_id)
+                # V32.1 修复：将全角符号【】（）修复为半角符号{}()
                 map_text = f"💬 (回复此消息即回复用户) {identifier.replace('\n', ' ')}"
                 msg_for_map = bot.send_message(ADMIN_ID, map_text)
                 MESSAGE_MAP[msg_for_map.message_id] = user_id
@@ -341,7 +342,7 @@ def handle_admin_reply(message):
         
         if target_id:
             bot.copy_message(chat_id=target_id, from_chat_id=ADMIN_ID, message_id=message.message_id)
-            # V32.0 移除回复确认（用户明确不要）
+            # V32.0 移除回复确认
         else:
             bot.reply_to(message, "⚠️ 错误：该消息的用户 ID 映射已失效（可能原因：已回复过一次或消息太旧被淘汰）。")
 
@@ -360,7 +361,7 @@ def handle_admin_commands(message):
     admin_id = message.from_user.id
     command = message.text.split()[0].lower()
     
-    # 1. 权限检查：确保是管理员本人
+    # 1. 权限检查
     if admin_id != ADMIN_ID:
         return
 
@@ -376,7 +377,6 @@ def handle_admin_commands(message):
     if command.startswith('/ban'):
         duration = DEFAULT_MANUAL_BAN_DURATION
         
-        # 尝试从命令中解析禁用时间
         parts = message.text.split()
         if len(parts) > 1 and parts[1].isdigit():
             duration = int(parts[1])
@@ -435,7 +435,7 @@ def handle_admin_commands(message):
 # ================= 启动逻辑 =================
 
 if __name__ == "__main__":
-    logging.info("🚀 Bot started (V32.0 Admin Control & Feedback Edition)...")
+    logging.info("🚀 Bot started (V32.1 修复版)...")
     
     update_thread = threading.Thread(target=update_spam_rules_thread, daemon=True)
     update_thread.start()
