@@ -1,24 +1,18 @@
-from pydantic_settings import BaseSettings
-from pydantic import Field
+import os
 
-class Settings(BaseSettings):
-    BOT_TOKEN: str = Field(..., min_length=10)
-    OWNER_ID: int
-    PORT: int = 8080
-    
-    SPAM_RULES_URL: str = "https://raw.githubusercontent.com/RGB-Outl4w/zapper-TGAB/main/spam_phrases.txt"
-    FALLBACK_KEYWORDS: list = [
-        "t.me/+", "joinchat", "crypto", "bitcoin", "trx", "usdt", "eth", "binance",
-        "外围", "嫩模", "空降", "约炮", "色情", "博彩", "赌博", "代发", "发单",
-        "上门", "点券", "换汇", "担保", "公群", "跑分", "网赚", "兼职"
-    ]
-    
-    FLOOD_WINDOW: int = 10
-    MAX_MSGS: int = 5
-    BAN_TIME: int = 600
+TOKEN = os.getenv("TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+TARGET_CHAT_ID = int(os.getenv("TARGET_CHAT_ID", "0"))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+PORT = int(os.getenv("PORT", "8080"))
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = 'utf-8'
+SPAM_KEYWORDS = [
+    "加群", "免费", "领钱", "福利", "点击", "http", "https", 
+    "t.me", "群组", "频道", "兼职", "日结", "加密", "货币", 
+    "USDT", "BTC", "投资", "理财", "裸聊", "约炮"
+]
 
-settings = Settings()
+RATE_LIMIT_WINDOW = 60
+RATE_LIMIT_COUNT = 5
+BAN_DURATION = 300
+LOG_RETENTION = 3600
