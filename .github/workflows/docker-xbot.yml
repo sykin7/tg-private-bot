@@ -1,37 +1,31 @@
-name: Build and xbot
+name: Build My Bot Subfolder
 
 on:
   push:
     branches: [ "main" ]
-    # 只有当以下文件发生变化时才触发构建，避免改个README也构建一次
     paths:
-      - 'xbot.py'
-      - 'Dockerfile'
-      - 'requirements.txt'
-      - '.github/workflows/**'
-  workflow_dispatch: # 允许手动点击按钮触发
+      - 'my_bot/**'
+      - '.github/workflows/build-my-bot.yml'
+  workflow_dispatch:
 
 env:
-  # 设置镜像名称，这里先暂时用变量，后面步骤会处理大小写
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: ${{ github.repository_owner }}/my_bot
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write # 允许写入 GitHub Packages
+      packages: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 关键步骤：把 GitHub 仓库名 (如 User/Repo) 转为全小写 (user/repo)
-      # Docker 不支持大写字母，这一步必不可少
       - name: Lowercase Image Name
         run: |
-          echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> ${GITHUB_ENV}
+          echo "IMAGE_NAME=${IMAGE_NAME,,}" >> ${GITHUB_ENV}
 
       - name: Log in to the Container registry
         uses: docker/login-action@v3
@@ -46,17 +40,14 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: .
+          context: ./my_bot
           push: true
-          # 自动打两个标签：
-          # 1. :latest (最新版)
-          # 2. :sha-xxxxxxx (根据 commit哈希值，方便回滚)
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.description=Telegram Spam Bot
+            org.opencontainers.image.description=My Bot in Subfolder
             org.opencontainers.image.licenses=MIT
           cache-from: type=gha
           cache-to: type=gha,mode=max
