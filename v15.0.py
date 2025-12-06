@@ -29,10 +29,9 @@ try:
 except ValueError:
     exit(1)
 
-# 硬编码你的规则地址，防止环境变量读取失败
-SPAM_RULES_URL = "https://raw.githubusercontent.com/sykin7/my-telegram-spam-rules/refs/heads/main/spam.txt"
+DEFAULT_RULE_URL = "https://raw.githubusercontent.com/sykin7/my-telegram-spam-rules/refs/heads/main/spam.txt"
+SPAM_RULES_URL = os.getenv('SPAM_RULES_URL', DEFAULT_RULE_URL)
 
-# 增强型本地黑名单，包含截图中的漏网之鱼
 FALLBACK_SPAM_KEYWORDS = [
     "t.me/+", "joinchat", "crypto", "bitcoin", "trx", "usdt", "eth", "binance",
     "外围", "嫩模", "空降", "约炮", "色情", "博彩", "赌博", "代发", "发单",
@@ -48,7 +47,6 @@ async def update_spam_rules(context: ContextTypes.DEFAULT_TYPE):
     custom_keywords = context.bot_data.get('custom_keywords', [])
     final_rules_set = set(custom_keywords)
     
-    # 强制将本地高危词加入规则库，哪怕网络请求成功也要包含这些
     final_rules_set.update(FALLBACK_SPAM_KEYWORDS)
 
     if SPAM_RULES_URL:
@@ -67,7 +65,6 @@ async def update_spam_rules(context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"Network error fetching rules: {e}")
     
     context.bot_data['spam_keywords'] = list(final_rules_set)
-    # logger.info(f"Rules updated. Total keywords: {len(final_rules_set)}")
 
 async def garbage_collect(context: ContextTypes.DEFAULT_TYPE):
     now = time.time()
@@ -150,7 +147,6 @@ async def forward_to_owner(update, context):
     message = update.message
     message_text = message.text or message.caption or ""
 
-    # 优先加载规则
     spam_keywords = context.bot_data.get('spam_keywords', [])
     if not spam_keywords:
         spam_keywords = FALLBACK_SPAM_KEYWORDS
