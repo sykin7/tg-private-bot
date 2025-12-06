@@ -1,3 +1,4 @@
 python-telegram-bot
 aiosqlite
 flask
+requests
