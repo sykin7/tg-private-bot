@@ -1,9 +1,15 @@
-FROM python:3.11-slim
+FROM python:3.9-slim
+
 WORKDIR /app
+ENV TZ=Asia/Shanghai
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
 COPY . .
-ENV DB_FILE=/data/bot_data.db
 RUN mkdir -p /data
-VOLUME /data
-CMD ["python", "your_bot_script.py"]
+
+EXPOSE 8080
+
+CMD ["python", "bot.py"]
