@@ -2,7 +2,7 @@ import asyncio
 import logging
 import unicodedata
 import re
-from flask import Flask, request, jsonify
+from flask import Flask, request
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import config
@@ -41,7 +41,6 @@ async def delete_and_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
-    chat_id = update.message.chat_id
     
     if user.id == config.ADMIN_ID:
         return
