@@ -18,10 +18,16 @@ if REMOTE_RULES_URL:
     try:
         response = requests.get(REMOTE_RULES_URL, timeout=10)
         if response.status_code == 200:
-            remote_words = [line.strip() for line in response.text.splitlines() if len(line.strip()) > 1]
+            remote_words = [
+                line.strip() for line in response.text.splitlines() 
+                if len(line.strip()) > 1
+            ]
             SPAM_KEYWORDS.extend(remote_words)
-    except Exception:
-        pass
+            print(f"Loaded {len(remote_words)} remote rules")
+    except Exception as e:
+        print(f"Remote rules error: {e}")
+
+SPAM_KEYWORDS = list(set(SPAM_KEYWORDS))
 
 RATE_LIMIT_WINDOW = 60
 RATE_LIMIT_COUNT = 5
