@@ -7,10 +7,12 @@ import requests
 import threading
 from collections import defaultdict
 
+# ================= 配置区域 =================
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_ID_STR = os.environ.get('ADMIN_ID')
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
 
+# 默认垃圾词库
 FALLBACK_SPAM_KEYWORDS = [
     "u币", "USDT", "泰达币", "跑分", "博彩", "兼职", "刷单", "各行各业", "代开", 
     "发票", "迷药", "枪支", "色情", "裸聊", "办证", "查询", "定位", "监听",
@@ -33,6 +35,8 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 spam_keywords = set(FALLBACK_SPAM_KEYWORDS)
 user_flood_control = defaultdict(list)
+
+# ================= 核心功能函数 =================
 
 def update_spam_rules_thread():
     global spam_keywords
@@ -75,10 +79,12 @@ def is_spam(text):
             return True
     return False
 
+# 优化点1：减少了换行符，解决了"留白太长"的问题
 def get_sender_footer(user):
     first = user.first_name if user.first_name else "User"
     safe_first = re.sub(r'[^\w\s]', '', first)
-    return f"\n\n----------------\n👤 {safe_first} | 🆔 ID: {user.id}"
+    # 这里只保留一个 \n，让排版更紧凑
+    return f"\n----------------\n👤 {safe_first} | 🆔 ID: {user.id}"
 
 def smart_truncate(text, footer, max_length):
     if not text: return footer
@@ -87,11 +93,13 @@ def smart_truncate(text, footer, max_length):
         return text[:available_len] + "..." + footer
     return text + footer
 
+# ================= 消息处理逻辑 =================
+
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    bot.reply_to(message, "👋 Hello! Send me a message and I will forward it to the admin.")
+    # 优化点2：欢迎语汉化
+    bot.reply_to(message, "👋 你好！直接给我发送消息，我会转发给管理员。")
 
-# 修复点1: 增加了 'animation' (GIF) 支持
 @bot.message_handler(content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'sticker', 'animation'], 
                      func=lambda m: m.chat.type == 'private' and m.from_user.id != ADMIN_ID)
 def handle_user_message(message):
@@ -120,23 +128,24 @@ def handle_user_message(message):
         elif message.content_type == 'voice':
             caption = smart_truncate(message.caption, footer, 1024)
             bot.send_voice(ADMIN_ID, message.voice.file_id, caption=caption)
-        elif message.content_type == 'animation':  # 新增 GIF 处理
+        elif message.content_type == 'animation':
             caption = smart_truncate(message.caption, footer, 1024)
             bot.send_animation(ADMIN_ID, message.animation.file_id, caption=caption)
         elif message.content_type == 'sticker':
             bot.send_sticker(ADMIN_ID, message.sticker.file_id)
-            # 修复点2: 优化提示语，防止管理员回复错误
-            bot.send_message(ADMIN_ID, f"👆 Sticker Received (Reply to THIS message to answer)\n{footer}")
+            # 优化点3：贴纸提示语汉化，并且调整了换行逻辑
+            # 使用 \n{footer} 配合 footer 自带的一个 \n，现在中间只有一行空行，不再是大片空白
+            bot.send_message(ADMIN_ID, f"👆 收到贴纸 (请回复这条消息)\n{footer}")
     except Exception as e:
         logging.error(f"Forward failed: {e}")
 
-# 修复点3: 增加未知类型消息的兜底处理
 @bot.message_handler(func=lambda m: m.chat.type == 'private' and m.from_user.id != ADMIN_ID, content_types=None)
 def handle_unknown_message(message):
     try:
         user = message.from_user
         footer = get_sender_footer(user)
-        bot.send_message(ADMIN_ID, f"⚠️ Received unknown message type ({message.content_type})\n{footer}")
+        # 优化点4：未知类型提示汉化
+        bot.send_message(ADMIN_ID, f"⚠️ 收到未知消息类型 ({message.content_type})\n{footer}")
     except:
         pass
 
@@ -153,17 +162,17 @@ def handle_admin_reply(message):
             target_id = int(ids[-1])
             bot.copy_message(chat_id=target_id, from_chat_id=ADMIN_ID, message_id=message.message_id)
         else:
-            # 针对管理员回复贴纸导致的报错，给出更智能的提示
+            # 优化点5：管理员错误提示汉化
             if original_msg.content_type == 'sticker':
-                bot.reply_to(message, "⚠️ Error: You replied to a Sticker image. Please reply to the TEXT message below it containing the ID.")
+                bot.reply_to(message, "⚠️ 错误：你回复的是贴纸图片。请回复贴纸下方带有 ID 的那条文字消息。")
             else:
-                bot.reply_to(message, "⚠️ Error: Could not find User ID in the message you replied to.")
+                bot.reply_to(message, "⚠️ 错误：无法在回复的消息中找到用户 ID。")
 
     except Exception as e:
-        bot.reply_to(message, f"❌ Failed: {e}")
+        bot.reply_to(message, f"❌ 发送失败: {e}")
 
 if __name__ == "__main__":
-    logging.info("🚀 Bot started (V16.4 Complete Edition)...")
+    logging.info("🚀 Bot started (V16.5 Chinese Optimized)...")
     
     update_thread = threading.Thread(target=update_spam_rules_thread, daemon=True)
     update_thread.start()
