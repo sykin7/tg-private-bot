@@ -198,7 +198,7 @@ def generate_and_send_captcha(user_id):
     
     return False
 
-# ================= 消息处理逻辑 (V32.2 语法终结版) =================
+# ================= 消息处理逻辑 (V32.2 修复语法) =================
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
@@ -298,7 +298,9 @@ def handle_user_message(message):
                 sent_msg = bot.send_animation(ADMIN_ID, message.animation.file_id, caption=(caption_or_text + identifier))
             elif message.content_type == 'sticker':
                 sent_msg = bot.send_sticker(ADMIN_ID, message.sticker.file_id)
-                map_text = f"💬 (回复此消息即回复用户) {identifier.replace('\n', ' ')}"
+                
+                # V32.2 FIX: 使用字符串连接规避 f-string 错误
+                map_text = "💬 (回复此消息即回复用户) " + identifier.replace('\n', ' ')
                 msg_for_map = bot.send_message(ADMIN_ID, map_text)
                 MESSAGE_MAP[msg_for_map.message_id] = user_id
                 
