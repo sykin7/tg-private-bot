@@ -1,233 +1,182 @@
-# -*- coding: utf-8 -*-
-
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from telegram.error import Forbidden, BadRequest
-import os
-from threading import Thread
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import telebot
 import logging
-import re
-import httpx
-import unicodedata
 import time
-import socket
-from collections import defaultdict
+import os
+import re
+import requests
+from telebot import apihelper
 
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.WARNING 
-)
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+# ================= 配置区域 =================
+# 1. 从环境变量获取 Token (最安全)
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
 
-OWNER_ID_STR = os.getenv('OWNER_ID')
-if not OWNER_ID_STR:
-    logger.error("Error: OWNER_ID not set")
-    exit(1)
-try:
-    OWNER_ID = int(OWNER_ID_STR)
-except ValueError:
-    exit(1)
+# 2. 管理员 ID (必须填对，否则只有你能用)
+ADMIN_ID = int(os.environ.get('ADMIN_ID', '你的管理员ID'))
 
-DEFAULT_RULE_URL = "https://raw.githubusercontent.com/sykin7/my-telegram-spam-rules/refs/heads/main/spam.txt"
-SPAM_RULES_URL = os.getenv('SPAM_RULES_URL', DEFAULT_RULE_URL)
-
+# 3. 垃圾广告关键词 (本地基础库)
 FALLBACK_SPAM_KEYWORDS = [
-    "t.me/+", "joinchat", "crypto", "bitcoin", "trx", "usdt", "eth", "binance",
-    "外围", "嫩模", "空降", "约炮", "色情", "博彩", "赌博", "代发", "发单",
-    "上门", "点券", "换汇", "担保", "公群", "跑分", "网赚", "兼职",
-    "u币", "傻逼", "u出", "出u", "收u", "高价收", "低价出", "支付宝", "微信支付"
+    "u币", "USDT", "泰达币", "跑分", "博彩", "兼职", "刷单", "各行各业", "代开", 
+    "发票", "迷药", "枪支", "色情", "裸聊", "办证", "查询", "定位", "监听"
 ]
 
-FLOOD_WINDOW = 10
-MAX_MSGS_PER_WINDOW = 5
-user_flood_control = defaultdict(list)
+# 4. 在线规则地址 (自动切换：Zeabur 变量优先 -> 否则用 GitHub)
+DEFAULT_REMOTE_SPAM_URL = "https://raw.githubusercontent.com/F720/Spam_Keywords/main/Spam_Keywords.txt"
+REMOTE_SPAM_URL = os.environ.get('REMOTE_SPAM_URL', DEFAULT_REMOTE_SPAM_URL)
 
-async def update_spam_rules(context: ContextTypes.DEFAULT_TYPE):
-    custom_keywords = context.bot_data.get('custom_keywords', [])
-    final_rules_set = set(custom_keywords)
-    
-    final_rules_set.update(FALLBACK_SPAM_KEYWORDS)
+# ===========================================
 
-    if SPAM_RULES_URL:
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(SPAM_RULES_URL, timeout=15.0)
-            if response.status_code == 200:
-                for line in response.text.splitlines():
-                    line = line.strip().lower()
-                    if not line or line.startswith('#'): continue
-                    keyword = line.split(':', 1)[-1].strip() if ':' in line else line
-                    if keyword: final_rules_set.add(keyword)
-            else:
-                logger.warning(f"Failed to fetch rules, status: {response.status_code}")
-        except Exception as e:
-            logger.warning(f"Network error fetching rules: {e}")
-    
-    context.bot_data['spam_keywords'] = list(final_rules_set)
+# 初始化日志
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-async def garbage_collect(context: ContextTypes.DEFAULT_TYPE):
-    now = time.time()
-    keys_to_remove = []
-    
-    for uid, timestamps in user_flood_control.items():
-        if timestamps and (now - timestamps[-1] > FLOOD_WINDOW):
-            keys_to_remove.append(uid)
-        elif not timestamps:
-            keys_to_remove.append(uid)
-            
-    if keys_to_remove:
-        for uid in keys_to_remove:
-            del user_flood_control[uid]
+# 检查 Token
+if not BOT_TOKEN:
+    logging.error("❌ 错误: 未检测到 BOT_TOKEN，请在 Zeabur 环境变量中设置！")
+    exit(1)
 
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass 
+bot = telebot.TeleBot(BOT_TOKEN)
 
-    def do_GET(self):
-        self.send_response(200)
-        self.wfile.write(b'OK')
+# 内存中的垃圾词库
+spam_keywords = set(FALLBACK_SPAM_KEYWORDS)
+last_update_time = 0
 
-def run_server():
-    socket.setdefaulttimeout(10) 
-    port = int(os.getenv('PORT', 8080))
-    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    Thread(target=server.serve_forever, daemon=True).start()
+# ----------------- 核心功能函数 -----------------
 
-async def start(update, context):
-    await update.message.reply_text('Ready.')
-
-def safe_cut_utf16(text, limit):
-    if text is None: return ""
-    if len(text) > limit:
-        return text[:limit] + "..."
-    return text
-
-def is_spam(text, keywords):
-    if not text: return False
-    
-    text_normalized = unicodedata.normalize('NFKC', text)
-    text_lower = text_normalized.lower()
-    
-    for keyword in keywords:
-        if keyword in text_lower: return True
-
-    text_cleaned = re.sub(r'[\W_]+', '', text_lower)
-    for keyword in keywords:
-        if keyword.isalnum() and keyword in text_cleaned:
-            return True
-            
-    return False
-
-def clean_user_name(name):
-    if not name: return "Unknown"
-    name = name.replace("(ID:", "").replace(")", "")
-    return "".join(ch for ch in name if unicodedata.category(ch) not in ['Cf', 'Cc'])
-
-def check_flood(user_id):
-    now = time.time()
-    timestamps = user_flood_control[user_id]
-    
-    valid_timestamps = [t for t in timestamps if now - t < FLOOD_WINDOW]
-    
-    if len(valid_timestamps) < MAX_MSGS_PER_WINDOW:
-        valid_timestamps.append(now)
-        user_flood_control[user_id] = valid_timestamps
-        return False 
-    else:
-        user_flood_control[user_id] = valid_timestamps
-        return True 
-
-async def forward_to_owner(update, context):
-    user = update.message.from_user
-    
-    if check_flood(user.id):
-        return 
-
-    message = update.message
-    message_text = message.text or message.caption or ""
-
-    spam_keywords = context.bot_data.get('spam_keywords', [])
-    if not spam_keywords:
-        spam_keywords = FALLBACK_SPAM_KEYWORDS
-
-    if is_spam(message_text, spam_keywords):
-        try: await message.reply_text("Spam detected.")
-        except: pass
+def update_spam_rules():
+    """从 GitHub 或指定链接更新垃圾词库"""
+    global spam_keywords, last_update_time
+    # 每小时更新一次
+    if time.time() - last_update_time < 3600:
         return
-
-    clean_name = clean_user_name(user.first_name)
-    user_header = f"📩 来自 {clean_name} (ID: {user.id}):\n\n"
-    header_len = len(user_header)
-    safe_limit = 4096 - header_len - 100
 
     try:
-        if message.text:
-            safe_text = safe_cut_utf16(message.text, safe_limit)
-            await context.bot.send_message(chat_id=OWNER_ID, text=user_header + safe_text)
-        
-        elif message.photo or message.video or message.document or message.voice or message.audio or message.animation:
-            original_caption = message.caption or ""
-            caption_limit = 1024 - header_len - 50
-            safe_caption = user_header + safe_cut_utf16(original_caption, caption_limit)
-            await message.copy(chat_id=OWNER_ID, caption=safe_caption)
-
+        logging.info(f"🔄 正在从 {REMOTE_SPAM_URL} 更新词库...")
+        response = requests.get(REMOTE_SPAM_URL, timeout=10)
+        if response.status_code == 200:
+            remote_words = set(line.strip() for line in response.text.splitlines() if line.strip())
+            
+            # 合并：远程词库 + 本地词库 + Zeabur 自定义变量
+            custom_spam = os.environ.get('CUSTOM_SPAM_KEYWORDS', '')
+            custom_words = set(w.strip() for w in custom_spam.split(',') if w.strip())
+            
+            spam_keywords = set(FALLBACK_SPAM_KEYWORDS) | remote_words | custom_words
+            last_update_time = time.time()
+            logging.info(f"✅ 词库更新成功，当前共 {len(spam_keywords)} 条规则")
         else:
-            await message.forward(chat_id=OWNER_ID)
-
+            logging.warning(f"⚠️ 更新失败，状态码: {response.status_code}")
     except Exception as e:
-        logger.warning(f"Forward error: {e}")
-        try: await message.forward(chat_id=OWNER_ID)
-        except: pass
+        logging.error(f"❌ 更新词库出错: {e}")
 
-async def reply_to_user(update, context):
-    if not update.message.reply_to_message:
-        await update.message.reply_text("Please reply to a message.")
+def is_spam(text):
+    """检查是否包含垃圾词"""
+    if not text:
+        return False
+    update_spam_rules() # 检查前尝试更新
+    for keyword in spam_keywords:
+        if keyword.lower() in text.lower():
+            logging.info(f"🗑️ 拦截垃圾广告: {keyword}")
+            return True
+    return False
+
+def clean_user_name(user):
+    """净化名字，防止特殊字符炸群，无名字时显示 Unnamed"""
+    first = user.first_name if user.first_name else ""
+    last = user.last_name if user.last_name else ""
+    full_name = f"{first} {last}".strip()
+    
+    if not full_name:
+        return "Unnamed"
+    
+    # 移除可能破坏显示的特殊符号
+    return re.sub(r'[^\w\s\u4e00-\u9fff]', '', full_name)
+
+# ----------------- 消息处理逻辑 -----------------
+
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    """欢迎语"""
+    bot.reply_to(message, "👋 您好！我是私聊机器人。\n直接发送消息即可，我会转发给管理员。")
+
+@bot.message_handler(func=lambda message: message.chat.type == 'private' and message.from_user.id != ADMIN_ID)
+def handle_private_message(message):
+    """处理用户发来的私聊"""
+    user = message.from_user
+    user_id = user.id
+    
+    # 1. 垃圾检测
+    if message.text and is_spam(message.text):
         return
 
-    original_message = update.message.reply_to_message
-    target_user_id = None
+    # 2. 名字净化
+    safe_name = clean_user_name(user)
     
-    if original_message.forward_from:
-        target_user_id = original_message.forward_from.id
-    elif original_message.text or original_message.caption:
-        content = original_message.text or original_message.caption
-        match = re.search(r"^📩 来自 .*? \(ID: (\d+)\):\n\n", content, re.DOTALL)
-        if match:
-            target_user_id = int(match.group(1))
+    # 3. 构建只有管理员能看见的各种信息
+    # 格式重点：ID单独一行，方便正则提取
+    info_text = (
+        f"📩 **新消息**\n"
+        f"👤 来自: {safe_name}\n"
+        f"🆔 ID: {user_id}\n" # 关键修改：ID 独立成行，且必须是纯数字
+        f"------------------"
+    )
 
-    if target_user_id:
-        try:
-            await update.message.copy(chat_id=target_user_id)
-            await update.message.reply_text(f"Sent.")
-        except Forbidden:
-            await update.message.reply_text(f"Failed: User blocked bot.")
-        except BadRequest as e:
-            await update.message.reply_text(f"Failed: {e}")
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
-    else:
-        await update.message.reply_text("Cannot find User ID.")
+    try:
+        # 发送提示头
+        sent_header = bot.send_message(ADMIN_ID, info_text, parse_mode='Markdown')
+        
+        # 复制用户消息内容（使用 copy_message 保护隐私）
+        bot.copy_message(
+            chat_id=ADMIN_ID,
+            from_chat_id=message.chat.id,
+            message_id=message.message_id
+        )
+        
+        logging.info(f"✅ 已转发用户 {user_id} 的消息")
+        
+    except Exception as e:
+        logging.error(f"❌ 转发失败: {e}")
 
-def main():
-    token = os.getenv('BOT_TOKEN')
-    if not token: return
+@bot.message_handler(func=lambda message: message.chat.id == ADMIN_ID and message.reply_to_message)
+def handle_reply(message):
+    """管理员回复用户"""
+    try:
+        # 获取管理员回复的那条原始消息（就是机器人的提示头）
+        original_message = message.reply_to_message
+        
+        # 1. 尝试从文本中提取 ID
+        # 逻辑：寻找 "ID: " 后面跟着的一串数字
+        target_id = None
+        
+        if original_message.text:
+            match = re.search(r"ID:\s*(\d+)", original_message.text)
+            if match:
+                target_id = int(match.group(1))
+        
+        if not target_id:
+            bot.reply_to(message, "❌ 无法找到用户 ID，请确认您回复的是带有 '🆔 ID:' 的消息头。")
+            return
 
-    custom_words = [w.strip().lower() for w in os.getenv('CUSTOM_SPAM_KEYWORDS', "").split(',') if w.strip()]
-    app = Application.builder().token(token).build()
-    app.bot_data['custom_keywords'] = custom_words
+        # 2. 发送回复给用户
+        # 使用 copy_message 避免暴露管理员 ID
+        bot.copy_message(
+            chat_id=target_id,
+            from_chat_id=ADMIN_ID,
+            message_id=message.message_id
+        )
+        
+        bot.reply_to(message, "✅ 回复成功！")
+        logging.info(f"✅ 管理员回复了用户 {target_id}")
 
-    app.job_queue.run_once(update_spam_rules, 1)
-    app.job_queue.run_repeating(update_spam_rules, interval=3600, first=10)
-    app.job_queue.run_repeating(garbage_collect, interval=600, first=600)
+    except Exception as e:
+        logging.error(f"❌ 回复失败: {e}")
+        bot.reply_to(message, f"❌ 发送失败: {e}")
 
-    private = filters.ChatType.PRIVATE
-    app.add_handler(CommandHandler('start', start, filters=private))
-    app.add_handler(MessageHandler(private & filters.User(user_id=OWNER_ID) & filters.REPLY & ~filters.COMMAND, reply_to_user))
-    app.add_handler(MessageHandler(private & ~filters.COMMAND & ~filters.User(user_id=OWNER_ID), forward_to_owner))
-
-    run_server()
-    app.run_polling()
-
-if __name__ == '__main__':
-    main()
+# ----------------- 启动程序 -----------------
+if __name__ == "__main__":
+    logging.info("🚀 机器人 V15.4 (ID 修复版) 已启动...")
+    # 移除 Webhook 保证 Polling 正常
+    try:
+        bot.remove_webhook()
+    except:
+        pass
+    
+    # 无限重连模式
+    bot.infinity_polling(timeout=10, long_polling_timeout=5)
