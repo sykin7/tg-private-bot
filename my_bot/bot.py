@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import os
 import logging
 import re
@@ -19,18 +18,14 @@ logger = logging.getLogger(__name__)
 OWNER_ID_STR = os.getenv('OWNER_ID')
 OWNER_ID = 0
 if not OWNER_ID_STR:
-    logger.error("致命错误: 环境变量 OWNER_ID 未设置!")
     exit(1)
 try:
     OWNER_ID = int(OWNER_ID_STR)
-    logger.info(f"OWNER_ID = {OWNER_ID}")
 except Exception:
-    logger.error("OWNER_ID 不是有效整数")
     exit(1)
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 if not BOT_TOKEN:
-    logger.error("致命错误: 环境变量 BOT_TOKEN 未设置!")
     exit(1)
 
 DEFAULT_SPAM_RULES_URL = "https://raw.githubusercontent.com/RGB-Outl4w/zapper-TGAB/main/spam_phrases.txt"
@@ -192,15 +187,13 @@ async def update_spam_rules_job(context: ContextTypes.DEFAULT_TYPE):
             final_set.update(url_list)
         else:
             final_set.update([k.lower().strip() for k in ["t.me/+", "joinchat", "crypto", "bitcoin", "trx", "usdt", "eth", "binance", "外围", "嫩模", "空降", "约炮", "色情", "博彩", "赌博", "代发", "发单", "上门", "点券", "换汇", "担保", "公群"]])
-    except Exception as e:
-        logger.warning(f"更新规则异常: {e}")
+    except Exception:
         final_set.update([k.lower().strip() for k in ["t.me/+", "joinchat", "crypto", "bitcoin", "trx", "usdt", "eth", "binance", "外围", "嫩模", "空降", "约炮", "色情", "博彩", "赌博", "代发", "发单", "上门", "点券", "换汇", "担保", "公群"]])
     global final_rules, final_patterns
     final_rules = [k for k in final_set if k]
     final_patterns = [build_fuzzy_pattern(k) for k in final_rules]
     context.bot_data['spam_keywords'] = final_rules
     context.bot_data['spam_patterns'] = final_patterns
-    logger.info(f"规则更新完成, total={len(final_rules)}")
 
 def is_spam_text(text: str, patterns: List[re.Pattern]) -> bool:
     if not text:
@@ -257,6 +250,8 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not update.message:
         return
     user = update.message.from_user
+    if user.id in ADMIN_IDS:
+        return
     uid = str(user.id)
     if check_rate_limit(user.id):
         try:
@@ -308,8 +303,8 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text("您的消息被检测为广告/违规，已被拦截。")
             logger.info(f"用户 {uid} 命中广告规则, block_count={cnt}")
             return
-    except Exception as e:
-        logger.warning(f"检测异常: {e}")
+    except Exception:
+        pass
     if not ADMIN_GROUP_ID:
         try:
             await update.message.reply_text("系统尚未配置管理员群组，暂时无法转发。")
@@ -332,8 +327,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         try:
             sent = await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"来自 {user.first_name} (ID:{uid}) 的新会话")
             topic_id = getattr(sent, 'message_thread_id', None)
-        except Exception as e:
-            logger.error(f"无法发送到管理员群: {e}")
+        except Exception:
             try:
                 await update.message.reply_text("转发失败，请稍后再试。")
             except Exception:
@@ -346,8 +340,8 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         forwarded = None
         try:
             forwarded = await update.message.forward(chat_id=ADMIN_GROUP_ID)
-        except Exception as e:
-            logger.error(f"forward again failed: {e}")
+        except Exception:
+            pass
     if forwarded:
         db.add_message_mapping(uid, str(update.message.message_id), str(forwarded.message_id), str(forwarded.chat_id), int(time.time()))
     try:
@@ -402,18 +396,10 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await asyncio.sleep(ra.retry_after)
         try:
             await update.message.copy(chat_id=int(target_user))
-        except Exception as e:
-            logger.error(f"转发回复失败: {e}")
-            try:
-                await update.message.reply_text(f"转发失败: {e}")
-            except Exception:
-                pass
-    except Exception as e:
-        logger.error(f"转发回复失败: {e}")
-        try:
-            await update.message.reply_text(f"转发失败: {e}")
         except Exception:
             pass
+    except Exception:
+        pass
 
 async def command_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -457,8 +443,8 @@ def run_health_server():
         server = HTTPServer(('0.0.0.0', port), H)
         logger.info(f"Health server running on {port}")
         server.serve_forever()
-    except Exception as e:
-        logger.warning(f"Health server error: {e}")
+    except Exception:
+        pass
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
