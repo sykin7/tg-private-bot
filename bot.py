@@ -1,14 +1,16 @@
 import telebot
 from telebot import apihelper
+from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 import logging
 import time
 import os
 import re
 import requests
 import threading
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
+import random
 
-# ================= 配置区域 =================
+# ================= 配置区域 (最终定制：已修改时间和随机封禁范围) =================
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_ID_STR = os.environ.get('ADMIN_ID') or os.environ.get('OWNER_ID')
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
@@ -26,8 +28,15 @@ REMOTE_SPAM_URL = os.environ.get('REMOTE_SPAM_URL', DEFAULT_REMOTE_SPAM_URL)
 FLOOD_WINDOW = 10
 MAX_MSGS_PER_WINDOW = 5
 FLOOD_PENALTY_TIME = 60
-MAX_MAP_SIZE = 50000 
-MAP_CLEANUP_INTERVAL = 3600 * 6
+MAX_MAP_SIZE = 1000 
+MIN_NUM = 10
+MAX_NUM = 99
+
+# V28.0 修改：人机验证时间限制改为 60 秒
+CAPTCHA_TIMEOUT = 60  # 60秒 = 1分钟
+# V28.0 修改：随机封禁时间范围（10分钟到30分钟）
+MIN_BAN_DURATION = 600     # 10分钟
+MAX_BAN_DURATION = 1800    # 30分钟
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -40,9 +49,27 @@ bot = telebot.TeleBot(BOT_TOKEN)
 spam_keywords = set(FALLBACK_SPAM_KEYWORDS)
 user_flood_control = defaultdict(list)
 user_penalty_status = {}
-MESSAGE_MAP = {} 
+VERIFIED_USERS = set()
+PENDING_CAPTCHA = {} 
+USER_BAN_STATUS = {}
 
-# ================= 核心功能函数 (未修改) =================
+# ================= 核心定制类：FIFO 容量限制字典 (V24.0 原汁原味保留) =================
+
+class SizedOrderedDict(OrderedDict):
+    def __init__(self, maxsize=1000, *args, **kwds):
+        self.maxsize = maxsize
+        super().__init__(*args, **kwds)
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        if len(self) > self.maxsize:
+            oldest_key = next(iter(self))
+            del self[oldest_key]
+            logging.info(f"Capacity reached. Removed oldest map entry: {oldest_key}")
+
+MESSAGE_MAP = SizedOrderedDict(MAX_MAP_SIZE)
+
+# ================= 核心功能函数 (V27.0 逻辑不变) =================
 
 def update_spam_rules_thread():
     global spam_keywords
@@ -97,36 +124,118 @@ def is_spam(text):
             return True
     return False
 
-# ----------------- 已移除 -----------------
-# def get_sender_footer(user):
-#     ...
-# ----------------- 已移除 -----------------
-# ----------------- 已移除 -----------------
-# def smart_truncate(text, footer, max_length):
-#     ...
-# ----------------- 已移除 -----------------
-
-def periodic_map_cleanup():
-    while True:
-        time.sleep(MAP_CLEANUP_INTERVAL) 
-        
-        if len(MESSAGE_MAP) > MAX_MAP_SIZE:
-            MESSAGE_MAP.clear()
-            logging.warning(f"MESSAGE_MAP size exceeded {MAX_MAP_SIZE}. Cleared map.")
-
 def send_interception_feedback(user_id, reason="违规内容"):
-    """发送拦截反馈消息，同时忽略用户可能已屏蔽机器人的异常。"""
     try:
-        # V20.0 调整了反馈语
         bot.send_message(user_id, f"🚫 您的消息 ({reason}) 已被系统拦截。")
     except apihelper.ApiTelegramException:
         pass
 
-# ================= 消息处理逻辑 =================
+def check_ban_status(user_id):
+    now = time.time()
+    if user_id in USER_BAN_STATUS:
+        if USER_BAN_STATUS[user_id] > now:
+            return True
+        else:
+            del USER_BAN_STATUS[user_id]
+            return False
+    return False
+
+def generate_and_send_captcha(user_id):
+    if user_id in VERIFIED_USERS:
+        return True
+    
+    now = time.time()
+
+    if user_id in PENDING_CAPTCHA:
+        _, timestamp = PENDING_CAPTCHA[user_id]
+        if now - timestamp < CAPTCHA_TIMEOUT:
+            return False 
+        else:
+            # 验证码过期，执行禁用逻辑
+            del PENDING_CAPTCHA[user_id]
+            
+            # V28.0 关键修改：随机生成封禁时间
+            random_ban_time = random.randint(MIN_BAN_DURATION, MAX_BAN_DURATION)
+            USER_BAN_STATUS[user_id] = now + random_ban_time
+            logging.warning(f"CAPTCHA timeout for {user_id}. User banned for {random_ban_time}s.")
+            
+            try:
+                bot.send_message(user_id, "⚠️ **验证超时！** 您已被系统暂时禁用。请稍后再试。", parse_mode="Markdown")
+            except apihelper.ApiTelegramException:
+                pass
+            return False
+
+
+    num1 = random.randint(MIN_NUM, MAX_NUM)
+    num2 = random.randint(MIN_NUM, MAX_NUM)
+    operator = random.choice(['+', '-'])
+    
+    if operator == '+':
+        question = f"{num1} + {num2} = ?"
+        answer = num1 + num2
+    else:
+        if num1 < num2:
+            num1, num2 = num2, num1
+        question = f"{num1} - {num2} = ?"
+        answer = num1 - num2
+
+    PENDING_CAPTCHA[user_id] = (str(answer), now)
+    logging.info(f"New CAPTCHA for {user_id}: {question} -> {answer}")
+
+    try:
+        # V28.0 修改：验证提示时间改为 60 秒
+        bot.send_message(user_id, f"🤖 **安全验证:** 为了证明您不是机器人，请在 **{CAPTCHA_TIMEOUT} 秒** 内回复以下算式的**数字答案**:\n\n`{question}`\n\n您无需等待或重发您的原始消息，只需直接回复答案即可。", parse_mode="Markdown")
+    except apihelper.ApiTelegramException as e:
+        logging.error(f"Failed to send CAPTCHA message to {user_id}: {e}")
+    
+    return False
+
+# ================= 消息处理逻辑 (V27.0 逻辑不变) =================
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     bot.reply_to(message, "👋 你好！直接给我发送消息，我会转发给管理员。")
+
+@bot.message_handler(func=lambda m: m.chat.type == 'private' and m.from_user.id in PENDING_CAPTCHA, content_types=['text'])
+def handle_captcha_answer(message):
+    user_id = message.from_user.id
+    now = time.time()
+    
+    if user_id in PENDING_CAPTCHA:
+        expected_answer, timestamp = PENDING_CAPTCHA[user_id]
+        
+        if now - timestamp > CAPTCHA_TIMEOUT:
+            # 超时处理
+            del PENDING_CAPTCHA[user_id]
+            
+            # V28.0 关键修改：随机生成封禁时间
+            random_ban_time = random.randint(MIN_BAN_DURATION, MAX_BAN_DURATION)
+            USER_BAN_STATUS[user_id] = now + random_ban_time
+            
+            try:
+                bot.send_message(user_id, "⚠️ **验证超时！** 您已被系统暂时禁用。请稍后再试。", parse_mode="Markdown")
+            except apihelper.ApiTelegramException:
+                pass
+            return
+
+        user_answer = message.text.strip()
+        
+        if user_answer.isdigit() and expected_answer == user_answer:
+            VERIFIED_USERS.add(user_id)
+            del PENDING_CAPTCHA[user_id]
+            logging.info(f"User {user_id} passed math CAPTCHA.")
+            
+            try:
+                bot.send_message(user_id, "✅ **验证成功!** 您现在可以发送消息了。请重新发送您想给管理员说的话。", parse_mode="Markdown")
+            except apihelper.ApiTelegramException:
+                 pass
+        else:
+            try:
+                bot.send_message(user_id, "❌ 答案错误，请重新计算！")
+            except apihelper.ApiTelegramException:
+                 pass
+            generate_and_send_captcha(user_id)
+
 
 @bot.message_handler(content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'sticker', 'animation', 
                                     'contact', 'location', 'poll'],
@@ -134,6 +243,20 @@ def send_welcome(message):
 def handle_user_message(message):
     user = message.from_user
     
+    if check_ban_status(user.id):
+        try:
+            bot.send_message(user.id, "🚫 您当前处于禁用状态，请稍后再试。")
+        except apihelper.ApiTelegramException:
+            pass
+        return
+
+    if user.id in PENDING_CAPTCHA and message.content_type == 'text':
+         handle_captcha_answer(message)
+         return
+    
+    if not generate_and_send_captcha(user.id):
+        return
+        
     if check_flood(user.id): 
         try:
             bot.send_message(user.id, "🛑 您的消息发送过于频繁，请稍后再试。")
@@ -151,12 +274,9 @@ def handle_user_message(message):
         sent_msg = None
 
         try:
-            # 修复点 1：转发时，不添加任何 footer 或额外的文本，直接使用原始消息内容
             if message.content_type == 'text':
-                # 文本消息直接转发
                 sent_msg = bot.send_message(ADMIN_ID, message.text) 
             elif message.content_type == 'photo':
-                # 图片消息使用原图 ID 和原字幕
                 sent_msg = bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=message.caption)
             elif message.content_type == 'video':
                 sent_msg = bot.send_video(ADMIN_ID, message.video.file_id, caption=message.caption)
@@ -168,13 +288,11 @@ def handle_user_message(message):
                 sent_msg = bot.send_animation(ADMIN_ID, message.animation.file_id, caption=message.caption)
             elif message.content_type == 'sticker':
                 sent_msg = bot.send_sticker(ADMIN_ID, message.sticker.file_id)
-                # 修复点 2：贴纸的映射消息也不带 footer，只保留提示
-                msg_for_map = bot.send_message(ADMIN_ID, "👆 收到贴纸 (请回复本条)")
+                msg_for_map = bot.send_message(ADMIN_ID, "💬 (回复此消息即回复用户)")
                 MESSAGE_MAP[msg_for_map.message_id] = user.id
                 return
 
             if sent_msg:
-                # 将转发消息 ID 与用户 ID 绑定到映射表，用于回复
                 MESSAGE_MAP[sent_msg.message_id] = user.id
 
         except Exception as e:
@@ -187,8 +305,10 @@ def handle_user_message(message):
 @bot.message_handler(func=lambda m: m.chat.type == 'private' and m.from_user.id != ADMIN_ID, content_types=None)
 def handle_unknown_message(message):
     try:
-        # 修复点 3：未知类型消息也不带 footer
-        send_interception_feedback(user.id, reason=f"未知({message.content_type})类型")
+        if check_ban_status(message.from_user.id) or not generate_and_send_captcha(message.from_user.id):
+             return
+             
+        send_interception_feedback(message.from_user.id, reason=f"未知({message.content_type})类型")
         bot.send_message(ADMIN_ID, f"⚠️ 未知类型消息 ({message.content_type})")
     except:
         pass
@@ -206,7 +326,7 @@ def handle_admin_reply(message):
         if target_id:
             bot.copy_message(chat_id=target_id, from_chat_id=ADMIN_ID, message_id=message.message_id)
         else:
-            bot.reply_to(message, "⚠️ 错误：无法在内存中找到此消息的映射用户 ID。\n可能原因：1. 消息太旧或已被清理。2. 您回复的不是原始转发消息。")
+            bot.reply_to(message, "⚠️ 错误：该消息的用户 ID 映射已失效（可能原因：已回复过一次或消息太旧被淘汰）。")
 
     except apihelper.ApiTelegramException as e:
         if "bot was blocked by the user" in str(e):
@@ -217,13 +337,10 @@ def handle_admin_reply(message):
         bot.reply_to(message, f"❌ 发送失败 (未知错误): {e}")
 
 if __name__ == "__main__":
-    logging.info("🚀 Bot started (V20.0 Final Security Edition)...")
+    logging.info("🚀 Bot started (V28.0 Random Ban Edition)...")
     
     update_thread = threading.Thread(target=update_spam_rules_thread, daemon=True)
     update_thread.start()
-    
-    cleanup_thread = threading.Thread(target=periodic_map_cleanup, daemon=True)
-    cleanup_thread.start()
     
     try: bot.remove_webhook()
     except: pass
