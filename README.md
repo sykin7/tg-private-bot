@@ -49,7 +49,7 @@ pip install pyTelegramBotAPI requests
 | 变量名 | 必填 | 默认值 | 说明 |
 | :--- | :---: | :--- | :--- |
 | `BOT_TOKEN` | ✅ | 无 | 你的 Telegram 机器人 Token |
-| `ADMIN_ID` | ✅ | 无 | 管理员的数字 ID (例如 `123456789`) |
+| `ADMIN_ID/OWNER_ID` | ✅ | 无 | 管理员的数字 ID (例如 `123456789`) |
 | `REMOTE_SPAM_URL` | ❌ | (内置 GitHub URL) | 自定义远程垃圾词库的 URL (Raw Text 格式) |
 | `CUSTOM_SPAM_KEYWORDS` | ❌ | 无 | 额外的自定义拦截词，用英文逗号 `,` 分隔 |
 
