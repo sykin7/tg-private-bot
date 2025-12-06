@@ -1,4 +1,3 @@
-python-telegram-bot
+python-telegram-bot[job-queue]
 aiosqlite
-flask
 requests
