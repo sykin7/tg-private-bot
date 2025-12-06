@@ -14,7 +14,7 @@ on:
 env:
   # 设置镜像名称，这里先暂时用变量，后面步骤会处理大小写
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: ${{ github.repository }}/bot
 
 jobs:
   build:
