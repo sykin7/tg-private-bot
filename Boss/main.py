@@ -31,24 +31,34 @@ def is_spam(text):
 
 async def delete_and_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        await update.message.delete()
-        await context.bot.ban_chat_member(
-            chat_id=update.message.chat_id,
-            user_id=update.message.from_user.id
-        )
+        target_message = update.message or update.edited_message
+        if target_message:
+            await target_message.delete()
+            await context.bot.ban_chat_member(
+                chat_id=target_message.chat_id,
+                user_id=target_message.from_user.id
+            )
     except Exception:
         pass
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.message.from_user
-    
+    message = update.message or update.edited_message
+    if not message or not message.from_user:
+        return
+
+    user = message.from_user
     if user.id == config.ADMIN_ID:
         return
 
-    text = update.message.text or update.message.caption or ""
+    text = message.text or message.caption or ""
     
     if is_spam(text):
         await delete_and_ban(update, context)
+        return
+
+    # 只要是编辑过的消息，如果没通过上面的广告检查，就不计入频率限制了，直接放行
+    # 防止用户修改错别字也被计入频率惩罚
+    if update.edited_message:
         return
 
     status = await check_user_status(
@@ -59,7 +69,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if status == "BANNED":
-        await update.message.delete()
+        await message.delete()
     elif status == "BANNED_NOW":
         await delete_and_ban(update, context)
     elif status == "ERROR":
@@ -87,7 +97,14 @@ async def main():
     await init_db()
     
     bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_message))
+    
+    # 这里增加了 filters.UpdateType.EDITED_MESSAGE，让它能监听到消息修改
+    common_filter = (filters.TEXT | filters.CAPTION | filters.PHOTO | filters.VIDEO | filters.Sticker.ALL | filters.Document.ALL)
+    
+    bot_app.add_handler(MessageHandler(
+        common_filter | filters.UpdateType.EDITED_MESSAGE, 
+        handle_message
+    ))
     
     await bot_app.initialize()
     await bot_app.start()
