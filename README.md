@@ -82,7 +82,7 @@ V39.2 版本引入了“不死鸟”轮询机制和自动数据目录创建功�
 
 如果这个项目对您有帮助，欢迎点亮一颗 ⭐ Star！
 
-[![Star History Chart](https://api.star-history.com/svg?repos=YOUR_USERNAME/YOUR_REPO_NAME&type=Date)](https://star-history.com/#YOUR_USERNAME/YOUR_REPO_NAME&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=sykin7/tg-private-bot&type=Date)](https://star-history.com/#sykin7/tg-private-bot&Date)
 
 ---
 
