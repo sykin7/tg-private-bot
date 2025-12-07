@@ -12,7 +12,6 @@ import random
 import sqlite3
 import unicodedata
 
-
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_ID_STR = os.environ.get('ADMIN_ID') or os.environ.get('OWNER_ID')
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
@@ -25,7 +24,6 @@ FALLBACK_SPAM_KEYWORDS = [
 
 DEFAULT_REMOTE_SPAM_URL = "https://raw.githubusercontent.com/sykin7/my-telegram-spam-rules/refs/heads/main/spam.txt"
 REMOTE_SPAM_URL = os.environ.get('REMOTE_SPAM_URL', DEFAULT_REMOTE_SPAM_URL)
-
 
 DB_PATH = os.environ.get('BOT_DB_PATH', '/app/data/bot_core.db')
 
