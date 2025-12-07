@@ -3,32 +3,27 @@ name: Build and Push Docker Image
 on:
   push:
     branches: [ "main" ]
-    # 只有当以下文件发生变化时才触发构建，避免改个README也构建一次
     paths:
       - 'bot.py'
       - 'Dockerfile'
       - 'requirements.txt'
       - '.github/workflows/**'
-  workflow_dispatch: # 允许手动点击按钮触发
+  workflow_dispatch:
 
 env:
-  # 设置镜像名称，这里先暂时用变量，后面步骤会处理大小写
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write # 允许写入 GitHub Packages
+      packages: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 关键步骤：把 GitHub 仓库名 (如 User/Repo) 转为全小写 (user/repo)
-      # Docker 不支持大写字母，这一步必不可少
       - name: Lowercase Image Name
         run: |
           echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> ${GITHUB_ENV}
@@ -48,9 +43,6 @@ jobs:
         with:
           context: .
           push: true
-          # 自动打两个标签：
-          # 1. :latest (最新版)
-          # 2. :sha-xxxxxxx (根据 commit哈希值，方便回滚)
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
