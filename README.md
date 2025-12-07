@@ -1,12 +1,13 @@
 
-# 🛡️ Telegram 私聊转发与主动防御机器人 (V32.2)
+# 🛡️ Telegram 私聊转发与主动防御机器人
 
-> **版本**: V32.2 Security Edition
-> **语言**: Python 3
-> **依赖**: pyTelegramBotAPI, requests
+![Version](https://img.shields.io/badge/Version-V32.2%20Security%20Edition-red)
+![Language](https://img.shields.io/badge/Language-Python%203-blue)
+![Dependencies](https://img.shields.io/badge/Dependencies-pyTelegramBotAPI%2C%20requests-orange)
+![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
+![License](https://img.shields.io/badge/License-MIT-green)
 
 这是一个面向需要高级安全管理功能的 Telegram 私聊转发机器人。除了双向转发外，它集成了**数学验证码、管理员封禁控制、多重反垃圾邮件**机制，旨在最大程度减少管理员接收到的无效和恶意消息。
-
 ![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
