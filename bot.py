@@ -1,5 +1,6 @@
 import telebot
 from telebot import apihelper
+from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 import logging
 import time
 import os
@@ -10,6 +11,7 @@ from collections import deque
 import random
 import sqlite3
 import unicodedata
+
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_ID_STR = os.environ.get('ADMIN_ID') or os.environ.get('OWNER_ID')
@@ -23,7 +25,9 @@ FALLBACK_SPAM_KEYWORDS = [
 
 DEFAULT_REMOTE_SPAM_URL = "https://raw.githubusercontent.com/sykin7/my-telegram-spam-rules/refs/heads/main/spam.txt"
 REMOTE_SPAM_URL = os.environ.get('REMOTE_SPAM_URL', DEFAULT_REMOTE_SPAM_URL)
-DB_PATH = os.environ.get('BOT_DB_PATH', 'bot_core.db')
+
+
+DB_PATH = os.environ.get('BOT_DB_PATH', '/app/data/bot_core.db')
 
 FLOOD_WINDOW = 10
 MAX_MSGS_PER_WINDOW = 5
@@ -40,6 +44,7 @@ REMOTE_MAX_CONTENT_BYTES = 128 * 1024
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 if not BOT_TOKEN or not ADMIN_ID:
+    logging.error("Error: BOT_TOKEN and ADMIN_ID must be set.")
     exit(1)
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -61,6 +66,15 @@ CN_NUM_MAP = {
 def get_db_conn():
     global _db_conn
     if _db_conn is None:
+
+        try:
+            db_dir = os.path.dirname(DB_PATH)
+            if db_dir and not os.path.exists(db_dir):
+                os.makedirs(db_dir, exist_ok=True)
+                logging.info(f"Created database directory: {db_dir}")
+        except Exception as e:
+            logging.error(f"Failed to create DB directory: {e}")
+
         _db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         _db_conn.execute("PRAGMA journal_mode=WAL")
         _db_conn.execute("PRAGMA synchronous=NORMAL")
