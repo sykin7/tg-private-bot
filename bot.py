@@ -14,12 +14,10 @@ import html
 import random
 from collections import deque
 
-# ================= 核心配置区域 =================
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_ID_STR = os.environ.get('ADMIN_ID') or os.environ.get('OWNER_ID')
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
 
-# 提示语
 WELCOME_ZH = os.environ.get('WELCOME_ZH', "👋 您好，请选择功能或直接发送消息。")
 VERIFIED_ZH = os.environ.get('VERIFIED_ZH', "✅ 验证通过！您现在可以发送消息了。")
 AUTO_REPLY_ZH = os.environ.get('AUTO_REPLY_ZH', "✅ 消息已送达，管理员会尽快回复。")
@@ -28,7 +26,6 @@ WELCOME_EN = os.environ.get('WELCOME_EN', "👋 Hello, please choose an option o
 VERIFIED_EN = os.environ.get('VERIFIED_EN', "✅ Verified! You can now send messages.")
 AUTO_REPLY_EN = os.environ.get('AUTO_REPLY_EN', "✅ Message sent. The admin will reply shortly.")
 
-# 基础过滤词
 FALLBACK_SPAM_KEYWORDS = [
     "u币", "USDT", "泰达币", "跑分", "博彩", "兼职", "刷单", "各行各业", "代开",
     "发票", "迷药", "枪支", "色情", "裸聊", "办证", "查询", "定位", "监听",
@@ -39,23 +36,22 @@ DEFAULT_REMOTE_SPAM_URL = "https://raw.githubusercontent.com/sykin7/my-telegram-
 REMOTE_SPAM_URL = os.environ.get('REMOTE_SPAM_URL', DEFAULT_REMOTE_SPAM_URL)
 DB_PATH = os.environ.get('BOT_DB_PATH', '/app/data/bot_core.db')
 
-# === 安全与性能参数 ===
-FLOOD_WINDOW = 10           # 单人洪水检测窗口(秒)
-MAX_MSGS_PER_WINDOW = 6     # 单人窗口内最大消息数
-GLOBAL_MESSAGE_LIMIT = 50   # 全网每秒最大消息处理数 (DDoS防御)
-FLOOD_PENALTY_TIME = 60     # 刷屏封禁时间
-CAPTCHA_TIMEOUT = 120       # 验证码超时
-MIN_BAN_DURATION = 600      
-MAX_BAN_DURATION = 3600     
-CAPTCHA_MAX_RETRIES = 3     
-SPAM_UPDATE_INTERVAL = 3600 
-REMOTE_MAX_CONTENT_BYTES = 128 * 1024 
-MAX_SPAM_KEYWORDS = 2000    # 正则最大关键词数
-MSG_AUTO_DELETE_DELAY = 10  
-CAPTCHA_DELETE_DELAY = 180  
-CACHE_TTL = 300             
-DB_MAX_ROWS = 1000          # 数据库最大保留行数
-DB_RETENTION_DAYS = 7       # 数据保留天数
+FLOOD_WINDOW = 10
+MAX_MSGS_PER_WINDOW = 6
+GLOBAL_MESSAGE_LIMIT = 50
+FLOOD_PENALTY_TIME = 60
+CAPTCHA_TIMEOUT = 120
+MIN_BAN_DURATION = 600
+MAX_BAN_DURATION = 3600
+CAPTCHA_MAX_RETRIES = 3
+SPAM_UPDATE_INTERVAL = 3600
+REMOTE_MAX_CONTENT_BYTES = 128 * 1024
+MAX_SPAM_KEYWORDS = 2000
+MSG_AUTO_DELETE_DELAY = 10
+CAPTCHA_DELETE_DELAY = 180
+CACHE_TTL = 300
+DB_MAX_ROWS = 1000
+DB_RETENTION_DAYS = 7
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -65,7 +61,6 @@ if not BOT_TOKEN or not ADMIN_ID:
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# 全局锁与状态
 _db_lock = threading.Lock()
 _spam_lock = threading.Lock()
 _flood_lock = threading.Lock()
@@ -77,11 +72,8 @@ user_status_cache = {}
 spam_regex_pattern = None
 _db_conn = None
 
-# 全局令牌桶 (DDoS 防御)
 _global_token_bucket = GLOBAL_MESSAGE_LIMIT
 _last_token_update = time.time()
-
-# ================= 核心工具类 =================
 
 class MsgDeleter:
     def __init__(self):
@@ -134,7 +126,6 @@ class AdminSender:
 deleter = MsgDeleter()
 admin_sender = AdminSender()
 
-# ================= 文本资源 =================
 STRINGS = {
     'captcha_ask': {
         'zh': "🤖 <b>人机验证</b>：\n请计算：<code>{q}</code> = ?\n(请直接回复数字结果)",
@@ -195,7 +186,6 @@ CN_NUM_MAP = {
     '5': '伍', '6': '陆', '7': '柒', '8': '捌', '9': '玖', '10': '拾'
 }
 
-# ================= 数据库操作 =================
 def get_db_conn():
     global _db_conn
     if _db_conn is None:
@@ -370,7 +360,6 @@ def db_cleanup_map():
         conn.execute("DELETE FROM message_map WHERE created_at < ?", (limit_time,))
         conn.commit()
 
-# ================= 辅助功能 =================
 def safe_requests_get(url):
     try:
         r = requests.get(url, timeout=10, stream=True)
@@ -601,7 +590,7 @@ def send_welcome_handler(message):
     try: ask_language(user_id)
     except: pass
 
-@bot.message_handler(func=lambda m: m.chat.type == 'private' and m.from_user.id != ADMIN_ID, content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'sticker', 'animation'])
+@bot.message_handler(func=lambda m: m.chat.type == 'private' and m.from_user.id != ADMIN_ID, content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'sticker', 'animation', 'video_note', 'location', 'contact', 'dice'])
 def handle_incoming(message):
     if not check_global_limit(): return 
 
@@ -684,7 +673,6 @@ def handle_incoming(message):
             if len(t) > 3800: t = t[:3800] + "..."
             safe_text = html.escape(t)
             
-            # 【核心修复点】将文本消息的 DB 保存逻辑封装进 Wrapper
             def send_text_wrapper():
                 try:
                     sent = bot.send_message(ADMIN_ID, safe_text + user_info, parse_mode='HTML')
@@ -711,6 +699,23 @@ def handle_incoming(message):
                         sent = bot.send_document(ADMIN_ID, message.document.file_id, caption=full_cap, parse_mode='HTML')
                     elif message.content_type == 'voice':
                         sent = bot.send_voice(ADMIN_ID, message.voice.file_id, caption=full_cap, parse_mode='HTML')
+                    elif message.content_type == 'animation':
+                        sent = bot.send_animation(ADMIN_ID, message.animation.file_id, caption=full_cap, parse_mode='HTML')
+                    elif message.content_type == 'audio':
+                        sent = bot.send_audio(ADMIN_ID, message.audio.file_id, caption=full_cap, parse_mode='HTML')
+                    elif message.content_type == 'video_note':
+                        bot.send_video_note(ADMIN_ID, message.video_note.file_id)
+                        sent = bot.send_message(ADMIN_ID, user_info, parse_mode='HTML')
+                    elif message.content_type == 'location':
+                        bot.send_location(ADMIN_ID, message.location.latitude, message.location.longitude)
+                        sent = bot.send_message(ADMIN_ID, user_info, parse_mode='HTML')
+                    elif message.content_type == 'contact':
+                        bot.send_contact(ADMIN_ID, phone_number=message.contact.phone_number, first_name=message.contact.first_name, last_name=message.contact.last_name)
+                        sent = bot.send_message(ADMIN_ID, user_info, parse_mode='HTML')
+                    elif message.content_type == 'dice':
+                        bot.send_dice(ADMIN_ID, emoji=message.dice.emoji)
+                        sent = bot.send_message(ADMIN_ID, user_info, parse_mode='HTML')
+                    
                     if sent: db_save_map(sent.message_id, user_id)
                 except Exception as e: logging.error(f"Media Send Error: {e}")
 
@@ -723,7 +728,7 @@ def handle_incoming(message):
             
     except Exception as e: logging.error(f"Fwd Error: {e}")
 
-@bot.message_handler(func=lambda m: m.chat.id == ADMIN_ID and m.reply_to_message, content_types=['text', 'photo', 'video', 'document', 'voice', 'sticker'])
+@bot.message_handler(func=lambda m: m.chat.id == ADMIN_ID and m.reply_to_message, content_types=['text', 'photo', 'video', 'document', 'voice', 'sticker', 'animation', 'audio', 'video_note', 'location', 'contact', 'dice'])
 def handle_admin_reply(message):
     origin_id = message.reply_to_message.message_id
     target_uid = db_get_map(origin_id)
@@ -760,19 +765,32 @@ def handle_admin_reply(message):
 
     try:
         safe_reply = html.escape(message.text) if message.text else None
-        
+        caption = html.escape(message.caption or "")
+
         if message.content_type == 'text': 
             bot.send_message(target_uid, safe_reply, parse_mode='HTML')
         elif message.content_type == 'photo': 
-            bot.send_photo(target_uid, message.photo[-1].file_id, caption=html.escape(message.caption or ""), parse_mode='HTML')
+            bot.send_photo(target_uid, message.photo[-1].file_id, caption=caption, parse_mode='HTML')
         elif message.content_type == 'sticker': 
             bot.send_sticker(target_uid, message.sticker.file_id)
         elif message.content_type == 'video': 
-            bot.send_video(target_uid, message.video.file_id, caption=html.escape(message.caption or ""), parse_mode='HTML')
+            bot.send_video(target_uid, message.video.file_id, caption=caption, parse_mode='HTML')
         elif message.content_type == 'document': 
-            bot.send_document(target_uid, message.document.file_id, caption=html.escape(message.caption or ""), parse_mode='HTML')
+            bot.send_document(target_uid, message.document.file_id, caption=caption, parse_mode='HTML')
         elif message.content_type == 'voice': 
-            bot.send_voice(target_uid, message.voice.file_id, caption=html.escape(message.caption or ""), parse_mode='HTML')
+            bot.send_voice(target_uid, message.voice.file_id, caption=caption, parse_mode='HTML')
+        elif message.content_type == 'animation':
+            bot.send_animation(target_uid, message.animation.file_id, caption=caption, parse_mode='HTML')
+        elif message.content_type == 'audio':
+            bot.send_audio(target_uid, message.audio.file_id, caption=caption, parse_mode='HTML')
+        elif message.content_type == 'video_note':
+            bot.send_video_note(target_uid, message.video_note.file_id)
+        elif message.content_type == 'location':
+            bot.send_location(target_uid, message.location.latitude, message.location.longitude)
+        elif message.content_type == 'contact':
+            bot.send_contact(target_uid, phone_number=message.contact.phone_number, first_name=message.contact.first_name)
+        elif message.content_type == 'dice':
+            bot.send_dice(target_uid, emoji=message.dice.emoji)
         
         m = bot.reply_to(message, "✅ 回复成功。")
         deleter.schedule(ADMIN_ID, m.message_id, 5)
@@ -791,7 +809,7 @@ if __name__ == "__main__":
     t_spam.start()
     t_clean = threading.Thread(target=cleanup_dict, daemon=True)
     t_clean.start()
-    logging.info("Core Started (Ultimate Secure Mode).")
+    logging.info("Core Started (All-In Mode).")
     while True:
         try: bot.infinity_polling(timeout=20, long_polling_timeout=10)
         except: time.sleep(5)
