@@ -14,10 +14,12 @@ import html
 import random
 from collections import deque
 
+# ================= 核心配置区域 =================
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_ID_STR = os.environ.get('ADMIN_ID') or os.environ.get('OWNER_ID')
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
 
+# 提示语
 WELCOME_ZH = os.environ.get('WELCOME_ZH', "👋 您好，请选择功能或直接发送消息。")
 VERIFIED_ZH = os.environ.get('VERIFIED_ZH', "✅ 验证通过！您现在可以发送消息了。")
 AUTO_REPLY_ZH = os.environ.get('AUTO_REPLY_ZH', "✅ 消息已送达，管理员会尽快回复。")
@@ -26,6 +28,7 @@ WELCOME_EN = os.environ.get('WELCOME_EN', "👋 Hello, please choose an option o
 VERIFIED_EN = os.environ.get('VERIFIED_EN', "✅ Verified! You can now send messages.")
 AUTO_REPLY_EN = os.environ.get('AUTO_REPLY_EN', "✅ Message sent. The admin will reply shortly.")
 
+# 基础过滤词
 FALLBACK_SPAM_KEYWORDS = [
     "u币", "USDT", "泰达币", "跑分", "博彩", "兼职", "刷单", "各行各业", "代开",
     "发票", "迷药", "枪支", "色情", "裸聊", "办证", "查询", "定位", "监听",
@@ -36,22 +39,23 @@ DEFAULT_REMOTE_SPAM_URL = "https://raw.githubusercontent.com/sykin7/my-telegram-
 REMOTE_SPAM_URL = os.environ.get('REMOTE_SPAM_URL', DEFAULT_REMOTE_SPAM_URL)
 DB_PATH = os.environ.get('BOT_DB_PATH', '/app/data/bot_core.db')
 
-FLOOD_WINDOW = 10
-MAX_MSGS_PER_WINDOW = 6
-GLOBAL_MESSAGE_LIMIT = 50
-FLOOD_PENALTY_TIME = 60
-CAPTCHA_TIMEOUT = 120
-MIN_BAN_DURATION = 600
-MAX_BAN_DURATION = 3600
-CAPTCHA_MAX_RETRIES = 3
-SPAM_UPDATE_INTERVAL = 3600
-REMOTE_MAX_CONTENT_BYTES = 128 * 1024
-MAX_SPAM_KEYWORDS = 2000
-MSG_AUTO_DELETE_DELAY = 10
-CAPTCHA_DELETE_DELAY = 180
-CACHE_TTL = 300
-DB_MAX_ROWS = 1000
-DB_RETENTION_DAYS = 7
+# === 安全与性能参数 ===
+FLOOD_WINDOW = 10           # 单人洪水检测窗口(秒)
+MAX_MSGS_PER_WINDOW = 6     # 单人窗口内最大消息数
+GLOBAL_MESSAGE_LIMIT = 50   # 全网每秒最大消息处理数 (DDoS防御)
+FLOOD_PENALTY_TIME = 60     # 刷屏封禁时间
+CAPTCHA_TIMEOUT = 120       # 验证码超时
+MIN_BAN_DURATION = 600      
+MAX_BAN_DURATION = 3600     
+CAPTCHA_MAX_RETRIES = 3     
+SPAM_UPDATE_INTERVAL = 3600 
+REMOTE_MAX_CONTENT_BYTES = 128 * 1024 
+MAX_SPAM_KEYWORDS = 2000    # 正则最大关键词数
+MSG_AUTO_DELETE_DELAY = 10  
+CAPTCHA_DELETE_DELAY = 180  
+CACHE_TTL = 300             
+DB_MAX_ROWS = 1000          # 数据库最大保留行数
+DB_RETENTION_DAYS = 7       # 数据保留天数
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -61,19 +65,23 @@ if not BOT_TOKEN or not ADMIN_ID:
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
+# 全局锁与状态
 _db_lock = threading.Lock()
 _spam_lock = threading.Lock()
 _flood_lock = threading.Lock()
 _cache_lock = threading.Lock()
 
 user_flood_control = {}
-media_group_cache = {}
+media_group_cache = {} 
 user_status_cache = {}
 spam_regex_pattern = None
 _db_conn = None
 
+# 全局令牌桶 (DDoS 防御)
 _global_token_bucket = GLOBAL_MESSAGE_LIMIT
 _last_token_update = time.time()
+
+# ================= 核心工具类 =================
 
 class MsgDeleter:
     def __init__(self):
@@ -126,6 +134,7 @@ class AdminSender:
 deleter = MsgDeleter()
 admin_sender = AdminSender()
 
+# ================= 文本资源 =================
 STRINGS = {
     'captcha_ask': {
         'zh': "🤖 <b>人机验证</b>：\n请计算：<code>{q}</code> = ?\n(请直接回复数字结果)",
@@ -186,6 +195,7 @@ CN_NUM_MAP = {
     '5': '伍', '6': '陆', '7': '柒', '8': '捌', '9': '玖', '10': '拾'
 }
 
+# ================= 数据库操作 =================
 def get_db_conn():
     global _db_conn
     if _db_conn is None:
@@ -360,6 +370,7 @@ def db_cleanup_map():
         conn.execute("DELETE FROM message_map WHERE created_at < ?", (limit_time,))
         conn.commit()
 
+# ================= 辅助功能 =================
 def safe_requests_get(url):
     try:
         r = requests.get(url, timeout=10, stream=True)
@@ -672,7 +683,16 @@ def handle_incoming(message):
             t = message.text
             if len(t) > 3800: t = t[:3800] + "..."
             safe_text = html.escape(t)
-            admin_sender.send(bot.send_message, ADMIN_ID, safe_text + user_info, parse_mode='HTML')
+            
+            # 【核心修复点】将文本消息的 DB 保存逻辑封装进 Wrapper
+            def send_text_wrapper():
+                try:
+                    sent = bot.send_message(ADMIN_ID, safe_text + user_info, parse_mode='HTML')
+                    if sent: db_save_map(sent.message_id, user_id)
+                except Exception as e: logging.error(f"Text Send Error: {e}")
+
+            admin_sender.send(send_text_wrapper)
+            
         else:
             cap = html.escape((message.caption or "")[:900])
             full_cap = cap + user_info
