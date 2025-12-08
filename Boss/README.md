@@ -1,134 +1,177 @@
 
-# 🛡️ Telegram 私聊防火墙 & 双向通讯机器人 (V19.0)
+# 🤖 Telegram 全能群管与客服机器人使用手册
 
-这是一个基于 Python Flask 和 python-telegram-bot 构建的高级 Telegram 机器人。它专为个人用户设计，提供**私聊广告拦截**、**消息频率限制**以及**无缝的双向私聊回复**功能。
+这是一个集成了**智能防广告**、**数学人机验证**、**双向私聊客服**以及**全员广播**功能的高性能 Telegram 机器人。本项目采用 Docker 部署，基于 Webhook 模式运行。
 
-## ✨ 主要功能
+## 目录
 
-*   **🕵️‍♂️ 智能反垃圾 (Anti-Spam)**：
-    *   自动识别并拦截包含特定关键词的广告消息。
-    *   支持 Unicode 变体检测（防止广告通过特殊字体绕过）。
-    *   **智能封禁**：群组内发广告自动踢出，私聊发广告自动拉黑数据库。
-*   **🛡️ 频率限制 (Rate Limiting)**：
-    *   防止恶意用户刷屏攻击。
-    *   超频自动封禁。
-*   **📨 双向无缝通讯**：
-    *   用户发给机器人的消息会转发给管理员。
-    *   管理员**回复**转发的消息，用户会直接收到（支持文字、图片、表情、视频等）。
-*   **🧹 自动维护**：
-    *   自动清理旧的数据库日志。
-    *   自动删除进群/退群等系统服务消息。
+1.  [功能特性](https://www.google.com/search?q=%23-%E5%8A%9F%E8%83%BD%E7%89%B9%E6%80%A7)
+2.  [准备工作](https://www.google.com/search?q=%23-%E5%87%86%E5%A4%87%E5%B7%A5%E4%BD%9C)
+3.  [核心配置详解 (Variables)](https://www.google.com/search?q=%23-%E6%A0%B8%E5%BF%83%E9%85%8D%E7%BD%AE%E8%AF%A6%E8%A7%A3-variables)
+4.  [部署教程 (Docker)](https://www.google.com/search?q=%23-%E9%83%A8%E7%BD%B2%E6%95%99%E7%A8%8B-docker)
+5.  [机器人操作指南](https://www.google.com/search?q=%23-%E6%9C%BA%E5%99%A8%E4%BA%BA%E6%93%8D%E4%BD%9C%E6%8C%87%E5%8D%97)
+6.  [常见问题排查](https://www.google.com/search?q=%23-%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5)
 
-## 🚀 部署指南 (Docker)
+-----
 
-### 1. 准备文件
-确保你的项目目录包含以下文件：
-*   `main.py` (主程序)
-*   `config.py` (配置文件)
-*   `database.py` (数据库逻辑)
-*   `requirements.txt`
+## ✨ 功能特性
 
-### 2. 环境变量配置
-在部署 Docker 时，请设置以下环境变量：
+  * **🛡️ 暴力防广**：自动检测群组消息，包含违禁词（支持去符号干扰检测）立即撤回并封禁发送者。
+  * **🧠 智能验证**：触发频率限制或新用户时，自动弹出数学题（如 `3 + 5 = ?`），答错或超时自动封禁。
+  * **📩 客服转发**：用户私聊机器人的消息会转发给管理员，管理员回复即可通过机器人发回给用户。
+  * **📢 系统广播**：管理员可一键向数据库内所有历史用户发送公告。
+  * **🧹 自动维护**：定时清理系统服务消息（进群/退群提示）和过期日志，防止数据库膨胀。
 
-| 变量名 | 必填 | 说明 |
-| :--- | :--- | :--- |
-| `TOKEN` | ✅ | Bot Token (从 @BotFather 获取) |
-| `ADMIN_ID` | ✅ | 管理员的数字 ID (可通过 @userinfobot 获取) |
-| `WEBHOOK_URL` | ✅ | 你的公网 HTTPS 域名 (例如 `https://bot.example.com`) |
-| `PORT` | ❌ | 默认 5000，根据平台需求修改 |
-| `SPAM_KEYWORDS` | ❌ | 违禁词列表，使用英文逗号分隔 |
+-----
 
-### 3. 启动命令 (示例)
+## 🛠 准备工作
 
-**Docker Run:**
+在开始之前，你需要准备以下信息：
+
+1.  **Bot Token**: 在 Telegram 找 [@BotFather](https://t.me/BotFather) 申请。
+2.  **Admin ID**: 你自己的 Telegram 数字 ID（可找 [@userinfobot](https://t.me/userinfobot) 获取）。
+3.  **Webhook 域名**: 因为脚本强制使用 `run_webhook`，你需要一个**HTTPS 域名**指向你的服务器 IP。
+
+-----
+
+## ⚙️ 核心配置详解 (Variables)
+
+你的脚本依赖 `config.py` 来获取变量。请在项目根目录下新建 `config.py` 文件，并严格按照以下格式填写：
+
+```python
+# config.py - 配置文件
+
+# 1. 基础设置
+TOKEN = "123456789:ABCDefghIJKLmnOPqrstUVwxyz"  # 你的机器人 Token
+ADMIN_ID = 123456789                           # 管理员的数字 ID (只有这个 ID 能使用广播和接收客服消息)
+
+# 2. 网络设置 (Webhook)
+# 注意：必须使用 HTTPS 域名，因为 TG 官方 Webhook 不支持纯 HTTP
+PORT = 8080                                    # 容器内部运行端口 (与 Dockerfile EXPOSE 一致)
+WEBHOOK_URL = "https://your-domain.com"        # 你的域名地址 (不要带最后的 /)
+
+# 3. 防垃圾广告设置
+# 这里填写你要屏蔽的关键词，支持部分匹配
+SPAM_KEYWORDS = {
+    "兼职", "刷单", "USDT", "博彩", "色情", 
+    "http", ".com", "加微信", "免费领"
+}
+
+# 4. 风控与频率限制
+RATE_LIMIT_WINDOW = 60    # 时间窗口 (秒)：检测多少秒内的消息
+RATE_LIMIT_COUNT = 10     # 阈值：在上面时间窗口内，超过多少条消息触发人机验证
+BAN_DURATION = 3600       # 封禁时长 (秒)：验证失败或发广告封禁多久 (3600秒 = 1小时)
+
+# 5. 系统设置
+LOG_RETENTION = 7         # 日志和数据库记录保留天数 (超过自动删除)
+```
+
+### 变量填写注意事项：
+
+  * **`SPAM_KEYWORDS`**: 是一个集合（Set），里面的词只要出现在群消息里，消息就会被秒删，人会被封。
+  * **`WEBHOOK_URL`**: 必须是外网可访问的 HTTPS 地址。Telegram 服务器会将消息推送到 `https://your-domain.com/YOUR_TOKEN`。
+
+-----
+
+## 🐳 部署教程 (Docker)
+
+### 第一步：构建镜像
+
+在包含 `Dockerfile` 的目录下运行：
+
+```bash
+docker build -t my-tg-bot .
+```
+
+### 第二步：运行容器
+
+**重要**：必须挂载 `/app/data` 目录，否则你重启容器后，用户数据库和验证状态会丢失。
+
 ```bash
 docker run -d \
-  --name tg-bot \
-  -e TOKEN="你的Token" \
-  -e ADMIN_ID="你的ID" \
-  -e WEBHOOK_URL="[https://你的域名.com](https://你的域名.com)" \
-  -p 5000:5000 \
-  my-tg-bot-image
-````
+  --name bot \
+  -p 8080:8080 \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/logs:/app/logs \
+  --restart always \
+  my-tg-bot
+```
 
-**Docker Compose:**
+  * `-p 8080:8080`: 将服务器的 8080 端口映射到容器。
+  * `-v .../data`: 保证数据库文件 `bot.db` 持久化保存。
 
-```yaml
-version: '3'
-services:
-  bot:
-    build: .
-    ports:
-      - "5000:5000"
-    environment:
-      - TOKEN=你的Token
-      - ADMIN_ID=123456789
-      - WEBHOOK_URL=[https://your-domain.com](https://your-domain.com)
-    restart: always
+### 第三步：配置反向代理 (Nginx/Caddy)
+
+因为 Docker 暴露的是 HTTP 端口，你需要用 Nginx 或 Caddy 给它加上 SSL (HTTPS) 并转发到 8080 端口。
+
+**Nginx 示例配置块：**
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+}
 ```
 
 -----
 
-## 📖 管理员使用手册
+## 🎮 机器人操作指南
 
-### 1\. 如何接收消息？
+### 1\. 基础设置 (非常重要！)
 
-  * 当普通用户给机器人发送消息时，你会收到一条格式如下的消息：
-    > 📩 来自 用户名 (ID: 12345678):
-    > [用户的消息内容]
+为了让机器人能看到群里的普通消息并进行过滤，你必须：
 
-### 2\. 如何回复用户？
+1.  私聊 **@BotFather**。
+2.  发送 `/mybots` -\> 选择你的机器人 -\> **Bot Settings**。
+3.  选择 **Group Privacy** -\> 设置为 **Turn off** (关闭隐私模式)。
+      * *解释：如果不关这个，机器人只能看到以 / 开头的命令，无法检测广告。*
 
-这是本机器人最核心的功能。你不需要输入指令，只需要：
+### 2\. 群组管理 (Anti-Spam)
 
-1.  在 Telegram 中，**长按** 那条由机器人转发给你的消息（带有 `ID: ...` 的那条）。
-2.  选择 **“回复” (Reply)** 功能。
-3.  输入你想说的话，或者发送 **图片、表情包、视频、文件**。
-4.  机器人会自动将你的回复内容“克隆”一份发送给该用户。
+1.  将机器人拉入你的群组。
+2.  **将机器人提升为管理员 (Admin)**。
+      * 必须权限：`Delete Messages` (删除消息), `Ban Users` (封禁用户)。
+3.  **效果**：
+      * 任何触发 `SPAM_KEYWORDS` 的消息会被秒删。
+      * 任何人刷屏（超过 `RATE_LIMIT_COUNT`）会触发数学验证题。
+      * 验证失败 3 次或乱点按钮，会被踢出或禁言。
 
-**注意：** 必须使用“回复”功能，直接发送新消息机器人不会转发。
+### 3\. 客服系统 (私聊)
 
-### 3\. 封禁机制说明
+这是脚本中很强的一个功能：
 
-  * **私聊场景**：如果用户发广告或刷屏，机器人会在数据库中将其标记为 `BANNED`，之后该用户的消息将被静默丢弃，不会打扰管理员。
-  * **群组场景**：如果机器人被拉入群组并赋予管理员权限，检测到广告会直接**删除消息并踢出用户**。
+  * **用户视角**：直接私聊机器人发送 "你好，我有问题"。
+  * **管理员视角**：你会收到一条消息：
+    > 📩 张三 (ID: 123456):
+    > 你好，我有问题
+  * **回复方法**：管理员直接 **回复 (Reply)** 这条消息，输入 "请问遇到什么问题？"。
+  * **结果**：机器人会把你的回复内容发给张三。
+
+### 4\. 广播命令 (Broadcast)
+
+只有在 `config.py` 里配置的 `ADMIN_ID` 才能使用此命令。
+
+  * **指令**：`/gb <内容>`
+  * **示例**：`/gb 各位注意，今晚服务器维护。`
+  * **作用**：机器人会遍历数据库，给所有和它私聊过的用户发送这条消息。
 
 -----
 
-## 🛠️ 技术栈
+## ❓ 常见问题排查
 
-  * Python 3.9+
-  * Flask (Web Server for Webhook)
-  * python-telegram-bot (v20+)
-  * SQLite (轻量级数据库)
+**Q1: 机器人为什么不回复 /start？**
 
-<!-- end list -->
+  * 检查 `WEBHOOK_URL` 是否配置正确，必须是 HTTPS。
+  * 检查服务器防火墙是否开放了 8080 端口。
+  * 查看日志：`docker logs bot` 或查看 `logs/bot.log`。
 
-````
+**Q2: 为什么群里发广告没反应？**
 
----
+  * **BotFather 的 Group Privacy 没关**（最常见原因）。
+  * 机器人不是管理员，没有删除权限。
+  * 广告词没命中 `SPAM_KEYWORDS` 里的词。
 
-### 💡 额外提示：配套的 `config.py` 写法
+**Q3: 修改了 config.py 怎么生效？**
 
-为了配合上面的 Docker 变量，你的 `config.py` 应该是这样的（**确保你现在的 config.py 长这样，否则读不到变量**）：
-
-```python
-import os
-
-# 必须从环境变量读取
-TOKEN = os.getenv("TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0")) # 默认为0防止报错，但在部署时必须设置
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-PORT = int(os.getenv("PORT", "5000"))
-
-# 其他配置
-RATE_LIMIT_WINDOW = 60
-RATE_LIMIT_COUNT = 10
-BAN_DURATION = 3600
-LOG_RETENTION = 7
-
-# 处理屏蔽词列表
-_spam_env = os.getenv("SPAM_KEYWORDS", "加群,兼职,日结,加密货币")
-SPAM_KEYWORDS = [k.strip() for k in _spam_env.split(",")]
-````
+  * 需要重启容器：`docker restart bot`。
