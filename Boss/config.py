@@ -1,11 +1,11 @@
 import os
 import requests
 
-TOKEN = os.getenv("TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-TARGET_CHAT_ID = int(os.getenv("TARGET_CHAT_ID", "0"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-PORT = int(os.getenv("PORT", "8080"))
+TOKEN = os.getenv("TOKEN", "你的BOT_TOKEN填在这里")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://你的域名.com")
+PORT = int(os.getenv("PORT", "8443"))
+
 REMOTE_RULES_URL = os.getenv("REMOTE_RULES_URL", "https://raw.githubusercontent.com/sykin7/my-telegram-spam-rules/refs/heads/main/spam.txt")
 
 SPAM_KEYWORDS = [
