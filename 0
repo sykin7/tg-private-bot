@@ -1,9 +1,5 @@
 # -*- coding: utf-8 -*-
 
-# --- V7.1 - 终极修正版 ---
-# 1. 修正 V7.0 中错误的 v13 库导入语句 (ModuleNotFoundError)
-# 2. 将 update_spam_rules 的类型提示改为 v20+ 兼容的 ContextTypes.DEFAULT_TYPE
-# 3. 保留 V7.0 的所有动态环境变量功能
 
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import os
@@ -13,16 +9,12 @@ import logging
 import re
 import httpx
 
-# (V7.1 修正: 删除了错误的 "from telegram.ext.callbackcontext import CallbackContext" 这一行)
-
-# --- V4版：日志记录配置 ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# --- V7.0 终极灵活版：从环境变量读取配置 ---
 
 # 1. 机器人主人ID (必须)
 OWNER_ID_STR = os.getenv('OWNER_ID')
@@ -48,23 +40,17 @@ FALLBACK_SPAM_KEYWORDS = [
     "外围", "嫩模", "空降", "约炮", "色情", "博彩", "赌博", "代发", "发单",
     "上门", "点券", "换汇", "担保", "公群"
 ]
-# --- V7.0 配置加载结束 ---
 
 
-# --- V6 终极版：自动更新 + 合并自定义规则 ---
-# --- V7.1 修正: 将 "context: CallbackContext" 修改为 v20 兼容的 "context: ContextTypes.DEFAULT_TYPE" ---
 async def update_spam_rules(context: ContextTypes.DEFAULT_TYPE):
     logger.info("正在尝试更新广告屏蔽规则...")
     
-    # 1. 从 context 中获取自定义关键词列表 (在 main() 中设置的)
     custom_keywords = context.bot_data.get('custom_keywords', [])
     
-    # 2. 准备一个集合，用于存放所有规则 (集合可以自动去重)
     final_rules_set = set(custom_keywords)
     if custom_keywords:
         logger.info(f"已加载 {len(custom_keywords)} 条自定义规则。")
 
-    # 3. 尝试从 URL 拉取规则 (使用 V7 的 SPAM_RULES_URL 变量)
     base_keywords_from_url = []
     try:
         async with httpx.AsyncClient() as client:
@@ -77,7 +63,6 @@ async def update_spam_rules(context: ContextTypes.DEFAULT_TYPE):
                 if not line or line.startswith('#'):
                     continue
                 
-                # V5.1 智能解析格式
                 if ':' in line:
                     keyword = line.split(':', 1)[-1].strip()
                 else:
@@ -86,7 +71,7 @@ async def update_spam_rules(context: ContextTypes.DEFAULT_TYPE):
                 if keyword:
                     base_keywords_from_url.append(keyword)
             
-            # 4A. URL 成功：将URL规则添加到集合中
+
             final_rules_set.update(base_keywords_from_url)
             logger.info(f"成功从URL加载 {len(base_keywords_from_url)} 条公共规则。")
         
@@ -101,14 +86,12 @@ async def update_spam_rules(context: ContextTypes.DEFAULT_TYPE):
         final_rules_set.update([k.lower().strip() for k in FALLBACK_SPAM_KEYWORDS])
         logger.info(f"已加载 {len(FALLBACK_SPAM_KEYWORDS)} 条备用规则。")
 
-    # 5. 最终将集合转换回列表，并存储到 bot_data 中
     final_rules_list = list(final_rules_set)
     context.bot_data['spam_keywords'] = final_rules_list
     
     logger.info(f"规则更新完毕。总计生效的独特关键词共 {len(final_rules_list)} 条。")
 
 
-# --- 用于平台健康检查的虚拟服务器 (V4) ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -122,12 +105,10 @@ def run_server():
     logger.info(f"Health check server on port {port} is running...")
     httpd.serve_forever()
 
-# --- /start 命令的处理器 (V4) ---
 async def start(update, context):
     welcome_message = '欢迎！您发送的任何消息都将被转发给管理员。'
     await update.message.reply_text(welcome_message)
 
-# --- V7.1 修正: 检查关键词是否为空 ---
 async def forward_to_owner(update, context):
     user = update.message.from_user
     message = update.message
@@ -153,7 +134,6 @@ async def forward_to_owner(update, context):
                 logger.warning(f"回复被拦截用户 {user.id} 时失败: {e}")
             return
 
-    # (如果不是广告，则执行V4的转发逻辑)
     info_text = f"👇 收到来自 {user.first_name} (ID: {user.id}) 的一条新消息:"
     try:
         await context.bot.send_message(chat_id=OWNER_ID, text=info_text)
@@ -170,7 +150,6 @@ async def forward_to_owner(update, context):
         error_message = '抱歉，发送消息时遇到错误。'
         await update.message.reply_text(error_message) # V7.1 修正: 使用 update.message.reply_text
 
-# --- 核心功能2 (V4终极版): 处理主人的回复，兼容隐私模式 ---
 async def reply_to_user(update, context):
     if update.message.reply_to_message:
         original_message = update.message.reply_to_message
@@ -195,7 +174,6 @@ async def reply_to_user(update, context):
         else:
             await update.message.reply_text("⚠️ 无法回复：请确保您“回复”到用户的转发消息，或者我发送的 `(ID:...)` 提示上。")
 
-# --- 主函数 ---
 def main():
     VERSION = "V7.1 - 终极修正版 (修正v20库导入错误)"
     logger.info(f"==========================================")
@@ -208,7 +186,6 @@ def main():
         logger.error("致命错误: 环境变量 BOT_TOKEN 未设置!")
         return
 
-    # --- V6 新增：读取自定义广告词 ---
     custom_words_env = os.getenv('CUSTOM_SPAM_KEYWORDS', "") # 默认为空字符串
     custom_keywords_list = []
     if custom_words_env:
@@ -220,31 +197,22 @@ def main():
         logger.info(f"配置加载：已从环境变量加载 {len(custom_keywords_list)} 个自定义关键词。")
     else:
         logger.info("配置加载：未在环境变量中找到 CUSTOM_SPAM_KEYWORDS，跳过自定义关键词。")
-    # --- V6 新增结束 ---
 
     app = Application.builder().token(token).build()
 
-    # --- V6 新增：将自定义列表存入 bot_data ---
     app.bot_data['custom_keywords'] = custom_keywords_list
-    # --- V6 新增结束 ---
 
-    # --- V5 新增：启动并调度广告规则更新任务 ---
     job_queue = app.job_queue
     job_queue.run_once(update_spam_rules, when=0) # 启动时立刻执行一次
     job_queue.run_repeating(update_spam_rules, interval=3600) # 之后每小时执行一次
-    # --- V5 任务调度结束 ---
 
-    # --- V7.0 处理器注册 ---
     app.add_handler(CommandHandler('start', start))
     app.add_handler(MessageHandler(filters.User(user_id=OWNER_ID) & filters.REPLY & ~filters.COMMAND, reply_to_user))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND & ~filters.User(user_id=OWNER_ID), forward_to_owner))
-    # --- V7.0 注册结束 ---
 
-    # 启动V4的健康检查服务器
     server_thread = Thread(target=run_server, daemon=True)
     server_thread.start()
 
-    # 启动机器人
     app.run_polling()
 
 if __name__ == '__main__':
