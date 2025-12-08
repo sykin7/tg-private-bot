@@ -1,5 +1,8 @@
 FROM python:3.9-slim
 
+ENV TZ=Asia/Shanghai
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
 RUN groupadd -g 5678 appuser && \
     useradd -r -u 5678 -g appuser appuser
 
