@@ -48,7 +48,7 @@ SPAM_UPDATE_INTERVAL = 3600
 REMOTE_MAX_CONTENT_BYTES = 128 * 1024
 MAX_SPAM_KEYWORDS = 2000
 MSG_AUTO_DELETE_DELAY = 10
-CAPTCHA_DELETE_DELAY = 180
+CAPTCHA_DELETE_DELAY = 60
 CACHE_TTL = 300
 DB_MAX_ROWS = 1000
 DB_RETENTION_DAYS = 7
@@ -112,7 +112,7 @@ class AdminSender:
         try:
             self.queue.put_nowait((func, args, kwargs))
         except queue.Full:
-            logging.warning("⚠️ Admin Queue Full! Message dropped.")
+            logging.warning("Admin Queue Full! Message dropped.")
 
     def _worker(self):
         while self.running:
@@ -505,14 +505,18 @@ def send_menu(user_id, text=None):
     btn_lang = KeyboardButton(STRINGS['menu_lang'][lang])
     markup.add(btn_contact, btn_help, btn_lang)
     msg = text if text else (WELCOME_ZH if lang == 'zh' else WELCOME_EN)
-    try: bot.send_message(user_id, msg, reply_markup=markup)
+    try:
+        m = bot.send_message(user_id, msg, reply_markup=markup)
+        deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
     except: pass
 
 def ask_language(chat_id):
     markup = InlineKeyboardMarkup()
     markup.row(InlineKeyboardButton("🇨🇳 中文", callback_data="set_lang:zh"),
                InlineKeyboardButton("🇺🇸 English", callback_data="set_lang:en"))
-    try: bot.send_message(chat_id, STRINGS['select_lang']['zh'], reply_markup=markup)
+    try: 
+        m = bot.send_message(chat_id, STRINGS['select_lang']['zh'], reply_markup=markup)
+        deleter.schedule(chat_id, m.message_id, MSG_AUTO_DELETE_DELAY)
     except: pass
 
 def generate_captcha(user_id):
@@ -559,12 +563,12 @@ def broadcast_thread(text):
         bot.send_message(ADMIN_ID, f"📢 广播结束\n✅ 成功: {success_count}\n❌ 失败(屏蔽/停用): {fail_count}")
     except: pass
 
-@bot.message_handler(commands=['broadcast'])
+@bot.message_handler(commands=['gb'])
 def handle_broadcast_command(message):
     if message.from_user.id != ADMIN_ID: return
-    msg_text = message.text.replace('/broadcast', '').strip()
+    msg_text = message.text.replace('/gb', '').strip()
     if not msg_text:
-        bot.reply_to(message, "⚠️ 格式错误。\n请发送: /broadcast 要发送的内容")
+        bot.reply_to(message, "⚠️ 格式错误。\n请发送: /gb 要发送的内容")
         return
     
     bot.reply_to(message, "🚀 正在后台开始广播，请稍候...")
@@ -584,6 +588,7 @@ def handle_language_callback(call):
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome_handler(message):
     user_id = message.from_user.id
+    deleter.schedule(user_id, message.message_id, MSG_AUTO_DELETE_DELAY)
     if check_flood(user_id):
         db_ban_user(user_id, FLOOD_PENALTY_TIME)
         return
@@ -601,11 +606,13 @@ def handle_incoming(message):
         db_ban_user(user_id, FLOOD_PENALTY_TIME)
         m = bot.send_message(user_id, get_text('flood_ban', user_id))
         deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
+        deleter.schedule(user_id, message.message_id, MSG_AUTO_DELETE_DELAY)
         return
 
     if check_deep_spam(message):
         m = bot.send_message(user_id, get_text('spam_ban', user_id))
         deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
+        deleter.schedule(user_id, message.message_id, MSG_AUTO_DELETE_DELAY)
         return
 
     stat = get_cached_user_status(user_id)
@@ -614,32 +621,41 @@ def handle_incoming(message):
     if message.content_type == 'text':
         txt = message.text
         if txt == STRINGS['menu_lang']['zh'] or txt == STRINGS['menu_lang']['en']:
+            deleter.schedule(user_id, message.message_id, MSG_AUTO_DELETE_DELAY)
             ask_language(user_id)
             return
         elif txt == STRINGS['menu_help']['zh'] or txt == STRINGS['menu_help']['en']:
+            deleter.schedule(user_id, message.message_id, MSG_AUTO_DELETE_DELAY)
             faq_text = "💡 FAQ / 常见问题:\n\n1. How to use? Just send msg.\n2. Price? Contact Admin."
-            bot.send_message(user_id, faq_text)
+            m = bot.send_message(user_id, faq_text)
+            deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
             return
         elif txt == STRINGS['menu_contact'][lang]:
-             bot.send_message(user_id, WELCOME_ZH if lang == 'zh' else WELCOME_EN)
+             deleter.schedule(user_id, message.message_id, MSG_AUTO_DELETE_DELAY)
+             m = bot.send_message(user_id, WELCOME_ZH if lang == 'zh' else WELCOME_EN)
+             deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
              return
 
     if message.content_type == 'text':
         result, data = db_check_and_verify(user_id, message.text.strip())
         if result == 'banned': return
         elif result == 'timeout_ban':
+            deleter.schedule(user_id, message.message_id, 1)
             m = bot.send_message(user_id, get_text('captcha_timeout', user_id))
             deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
             return
         elif result == 'fail_ban':
+            deleter.schedule(user_id, message.message_id, 1)
             m = bot.send_message(user_id, get_text('captcha_fail', user_id))
             deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
             return
         elif result == 'wrong_answer':
+            deleter.schedule(user_id, message.message_id, 1)
             m = bot.send_message(user_id, get_text('captcha_wrong', user_id))
             deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
             return
         elif result == 'success':
+            deleter.schedule(user_id, message.message_id, 1)
             msg = VERIFIED_ZH if lang == 'zh' else VERIFIED_EN
             send_menu(user_id, msg)
             return
@@ -650,6 +666,7 @@ def handle_incoming(message):
         if message.content_type != 'text':
              m = bot.send_message(user_id, get_text('wait_verify', user_id))
              deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
+             deleter.schedule(user_id, message.message_id, MSG_AUTO_DELETE_DELAY)
         q = generate_captcha(user_id)
         m = bot.send_message(user_id, q, parse_mode='HTML')
         deleter.schedule(user_id, m.message_id, CAPTCHA_DELETE_DELAY)
@@ -658,6 +675,7 @@ def handle_incoming(message):
     if message.content_type in ['photo', 'video', 'document'] and not message.caption:
         m = bot.send_message(user_id, get_text('media_no_caption', user_id))
         deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
+        deleter.schedule(user_id, message.message_id, MSG_AUTO_DELETE_DELAY)
         return
 
     safe_first = html.escape(message.from_user.first_name or "")
