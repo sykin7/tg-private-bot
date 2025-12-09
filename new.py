@@ -707,8 +707,16 @@ def handle_incoming(message):
         deleter.schedule(user_id, message.message_id, MSG_AUTO_DELETE_DELAY)
         return
 
-    safe_user = html.escape(message.from_user.first_name or "")
-    user_info = f"\n👤 <a href='tg://user?id={user_id}'>{safe_user}</a> | 🆔 <code>{user_id}</code>" + (" 🟢" if is_whitelisted else "")
+    first_name = message.from_user.first_name or ""
+    last_name = message.from_user.last_name or ""
+    full_name = (first_name + " " + last_name).strip() or "User"
+    safe_name = html.escape(full_name)
+    
+    username = message.from_user.username
+    uname_line = f"🔗 @{username}" if username else "🔗 No Username"
+    lang_code = user_status.get('lang', 'zh') or 'zh'
+    
+    user_info = f"\n\n👤 <a href='tg://user?id={user_id}'>{safe_name}</a>\n{uname_line}\n🆔 <code>{user_id}</code> [Lang: {lang_code}]" + (" 🟢" if is_whitelisted else "")
     
     def send_wrapper():
         try:
