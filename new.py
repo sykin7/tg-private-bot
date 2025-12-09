@@ -708,7 +708,7 @@ def handle_incoming(message):
         return
 
     safe_user = html.escape(message.from_user.first_name or "")
-    user_info = f"\n👤 <b>{safe_user}</b> | 🆔 <code>{user_id}</code>" + (" 🟢" if is_whitelisted else "")
+    user_info = f"\n👤 <a href='tg://user?id={user_id}'>{safe_user}</a> | 🆔 <code>{user_id}</code>" + (" 🟢" if is_whitelisted else "")
     
     def send_wrapper():
         try:
