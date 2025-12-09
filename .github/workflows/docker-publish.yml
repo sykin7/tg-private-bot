@@ -12,7 +12,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: sykin7/test robot
+  IMAGE_NAME: sykin7/testrobot
 
 jobs:
   build:
