@@ -14,12 +14,10 @@ import html
 import random
 from collections import deque
 
-# --- 基础配置 ---
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_ID_STR = os.environ.get('ADMIN_ID') or os.environ.get('OWNER_ID')
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
 
-# --- 提示语配置 ---
 WELCOME_ZH = os.environ.get('WELCOME_ZH', "👋 您好，请选择功能或直接发送消息。")
 VERIFIED_ZH = os.environ.get('VERIFIED_ZH', "✅ 验证通过！您现在可以发送消息了。")
 AUTO_REPLY_ZH = os.environ.get('AUTO_REPLY_ZH', "✅ 消息已送达，管理员会尽快回复。")
@@ -28,7 +26,6 @@ WELCOME_EN = os.environ.get('WELCOME_EN', "👋 Hello, please choose an option o
 VERIFIED_EN = os.environ.get('VERIFIED_EN', "✅ Verified! You can now send messages.")
 AUTO_REPLY_EN = os.environ.get('AUTO_REPLY_EN', "✅ Message sent. The admin will reply shortly.")
 
-# --- 垃圾词库 ---
 FALLBACK_SPAM_KEYWORDS = [
     "u币", "USDT", "泰达币", "跑分", "博彩", "兼职", "刷单", "各行各业", "代开",
     "发票", "迷药", "枪支", "色情", "裸聊", "办证", "查询", "定位", "监听",
@@ -39,7 +36,6 @@ DEFAULT_REMOTE_SPAM_URL = "https://raw.githubusercontent.com/sykin7/my-telegram-
 REMOTE_SPAM_URL = os.environ.get('REMOTE_SPAM_URL', DEFAULT_REMOTE_SPAM_URL)
 DB_PATH = os.environ.get('BOT_DB_PATH', '/app/data/bot_core.db')
 
-# --- 核心参数调整 ---
 FLOOD_WINDOW = 10
 MAX_MSGS_PER_WINDOW = 6
 GLOBAL_MESSAGE_LIMIT = 20
@@ -55,9 +51,8 @@ MSG_AUTO_DELETE_DELAY = 10
 CAPTCHA_DELETE_DELAY = 60
 CACHE_TTL = 300
 
-# [修改点1] 数据库限制更严格
-DB_MAX_ROWS = 1000          # 限制 1000 条记录
-DB_SIZE_LIMIT_MB = 10       # 数据库文件超过 10MB 就强制清理
+DB_MAX_ROWS = 1000
+DB_SIZE_LIMIT_MB = 10
 DB_RETENTION_DAYS = 7
 MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
 
@@ -295,7 +290,6 @@ def db_save_captcha(user_id, answer):
                      (user_id, answer, time.time()))
         conn.commit()
 
-# [修改点2] 数据库自动清理与管理员通知逻辑
 def db_save_map(msg_id, user_id):
     cleaned_info = None
     with _db_lock:
@@ -303,10 +297,8 @@ def db_save_map(msg_id, user_id):
         conn.execute("INSERT OR REPLACE INTO message_map (msg_id, user_id, created_at) VALUES (?, ?, ?)",
                      (msg_id, user_id, time.time()))
         
-        # 10% 概率检查数据库状态
         if random.random() < 0.1:
             try:
-                # 1. 检查行数限制 (超过 1000 条则覆盖旧的)
                 cur = conn.cursor()
                 cur.execute("SELECT COUNT(*) FROM message_map")
                 count = cur.fetchone()[0]
@@ -315,7 +307,6 @@ def db_save_map(msg_id, user_id):
                     conn.execute(f"DELETE FROM message_map WHERE msg_id IN (SELECT msg_id FROM message_map ORDER BY created_at ASC LIMIT {limit_cnt})")
                     cleaned_info = f"🗑️ 数据库清理: 自动覆盖了 {limit_cnt} 条旧消息记录。"
 
-                # 2. 检查文件大小 (超过 10MB 则 VACUUM)
                 if os.path.exists(DB_PATH) and os.path.getsize(DB_PATH) > (DB_SIZE_LIMIT_MB * 1024 * 1024):
                     conn.execute("VACUUM")
                     cleaned_info = "🧹 数据库清理: 文件过大，已执行 VACUUM 压缩。"
@@ -324,7 +315,6 @@ def db_save_map(msg_id, user_id):
                 
         conn.commit()
 
-    # 如果触发了清理，通知管理员
     if cleaned_info:
         try: bot.send_message(ADMIN_ID, cleaned_info)
         except: pass
@@ -615,29 +605,21 @@ def send_welcome_handler(message):
         deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
         send_menu(user_id)
 
-# [修改点3] 编辑消息检测 (Anti-Edit Spam)
 @bot.edited_message_handler(func=lambda m: True)
 def handle_edited_message(message):
     if message.from_user.id == ADMIN_ID: return
     user_id = message.from_user.id
     user_status = get_cached_user_status(user_id)
     
-    # 1. 如果是白名单，跳过检查
     if user_status['wl']: return
-
-    # 2. 如果是黑名单，忽略
     if user_status['bl']: return
 
-    # 3. 检查编辑后的内容是否含广告
     if check_deep_spam(message):
-        # 触发封禁：封禁时长 3小时
         db_ban_user(user_id, MAX_BAN_DURATION)
         try:
             bot.delete_message(message.chat.id, message.message_id)
-            # 通知用户
             m = bot.send_message(user_id, get_text('spam_edit_ban', user_id), parse_mode='HTML')
             deleter.schedule(user_id, m.message_id, 30)
-            # 通知管理员
             alert_msg = f"⚠️ <b>检测到违规编辑</b>\n用户: {user_id}\n操作: 已封禁并删除消息。"
             bot.send_message(ADMIN_ID, alert_msg, parse_mode='HTML')
         except: pass
@@ -657,9 +639,7 @@ def handle_incoming(message):
 
     is_whitelisted = user_status['wl']
 
-    # [修改点4] 白名单特权升级：跳过 Flood, Spam, Captcha
     if not is_whitelisted:
-        # 1. 检查刷屏
         if check_flood(user_id, getattr(message, 'media_group_id', None)):
             db_ban_user(user_id, FLOOD_PENALTY_TIME)
             m = bot.send_message(user_id, get_text('flood_ban', user_id))
@@ -667,14 +647,12 @@ def handle_incoming(message):
             deleter.schedule(user_id, message.message_id, MSG_AUTO_DELETE_DELAY)
             return
 
-        # 2. 检查广告 (Spam)
         if check_deep_spam(message):
             m = bot.send_message(user_id, get_text('spam_ban', user_id))
             deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
             deleter.schedule(user_id, message.message_id, MSG_AUTO_DELETE_DELAY)
             return
         
-        # 3. 检查验证码 (Captcha)
         if message.content_type == 'text':
             result, data = db_check_and_verify(user_id, message.text.strip())
             if result == 'banned': return
@@ -701,11 +679,9 @@ def handle_incoming(message):
             deleter.schedule(user_id, m.message_id, CAPTCHA_DELETE_DELAY)
             return
 
-    # 4. 菜单与自动回复处理
     lang = user_status['lang'] if user_status['lang'] else 'zh'
     if message.content_type == 'text':
         if message.text in [STRINGS['menu_contact'][lang], STRINGS['menu_help'][lang], STRINGS['menu_lang'][lang]]:
-            # 处理菜单点击逻辑 (略微简化代码结构，逻辑不变)
             if message.text == STRINGS['menu_lang'][lang]: ask_language(user_id)
             elif message.text == STRINGS['menu_help'][lang]: 
                 m = bot.send_message(user_id, "💡 FAQ / 常见问题:\n1. 消息直接发送。\n2. 违规自动封禁。")
@@ -716,18 +692,21 @@ def handle_incoming(message):
             deleter.schedule(user_id, message.message_id, MSG_AUTO_DELETE_DELAY)
             return
 
-    # 5. 文件大小检查
     file_size = 0
     if message.content_type == 'photo': file_size = message.photo[-1].file_size
     elif message.content_type == 'video': file_size = message.video.file_size
     elif message.content_type == 'document': file_size = message.document.file_size
+    elif message.content_type == 'audio': file_size = message.audio.file_size
+    elif message.content_type == 'animation': file_size = message.animation.file_size
+    elif message.content_type == 'voice': file_size = message.voice.file_size
+    elif message.content_type == 'video_note': file_size = message.video_note.file_size
+    
     if file_size > MAX_FILE_SIZE_BYTES:
         m = bot.send_message(user_id, get_text('file_too_large', user_id))
         deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
         deleter.schedule(user_id, message.message_id, MSG_AUTO_DELETE_DELAY)
         return
 
-    # 6. 转发给管理员
     safe_user = html.escape(message.from_user.first_name or "")
     user_info = f"\n👤 <b>{safe_user}</b> | 🆔 <code>{user_id}</code>" + (" 🟢" if is_whitelisted else "")
     
@@ -740,6 +719,10 @@ def handle_incoming(message):
                 sent = bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=html.escape(message.caption or "")+user_info, parse_mode='HTML')
             elif message.content_type == 'video':
                 sent = bot.send_video(ADMIN_ID, message.video.file_id, caption=html.escape(message.caption or "")+user_info, parse_mode='HTML')
+            elif message.content_type == 'animation':
+                sent = bot.send_animation(ADMIN_ID, message.animation.file_id, caption=html.escape(message.caption or "")+user_info, parse_mode='HTML')
+            elif message.content_type == 'audio':
+                sent = bot.send_audio(ADMIN_ID, message.audio.file_id, caption=html.escape(message.caption or "")+user_info, parse_mode='HTML')
             elif message.content_type == 'document':
                 sent = bot.send_document(ADMIN_ID, message.document.file_id, caption=html.escape(message.caption or "")+user_info, parse_mode='HTML')
             elif message.content_type == 'sticker':
@@ -747,6 +730,18 @@ def handle_incoming(message):
                 sent = bot.send_message(ADMIN_ID, user_info, parse_mode='HTML')
             elif message.content_type == 'voice':
                 sent = bot.send_voice(ADMIN_ID, message.voice.file_id, caption=user_info, parse_mode='HTML')
+            elif message.content_type == 'video_note':
+                bot.send_video_note(ADMIN_ID, message.video_note.file_id)
+                sent = bot.send_message(ADMIN_ID, user_info, parse_mode='HTML')
+            elif message.content_type == 'location':
+                bot.send_location(ADMIN_ID, message.location.latitude, message.location.longitude)
+                sent = bot.send_message(ADMIN_ID, user_info, parse_mode='HTML')
+            elif message.content_type == 'contact':
+                bot.send_contact(ADMIN_ID, phone_number=message.contact.phone_number, first_name=message.contact.first_name)
+                sent = bot.send_message(ADMIN_ID, user_info, parse_mode='HTML')
+            elif message.content_type == 'dice':
+                bot.send_dice(ADMIN_ID, emoji=message.dice.emoji)
+                sent = bot.send_message(ADMIN_ID, user_info, parse_mode='HTML')
             
             if sent: db_save_map(sent.message_id, user_id)
         except Exception as e: logging.error(f"Fwd Error: {e}")
@@ -757,7 +752,7 @@ def handle_incoming(message):
         m = bot.send_message(user_id, AUTO_REPLY_ZH if lang == 'zh' else AUTO_REPLY_EN)
         deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
 
-@bot.message_handler(func=lambda m: m.chat.id == ADMIN_ID and m.reply_to_message, content_types=['text', 'photo', 'video', 'document', 'voice', 'sticker'])
+@bot.message_handler(func=lambda m: m.chat.id == ADMIN_ID and m.reply_to_message, content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'sticker', 'animation', 'video_note', 'location', 'contact', 'dice'])
 def handle_admin_reply(message):
     target_uid = db_get_map(message.reply_to_message.message_id)
     if not target_uid:
@@ -791,8 +786,14 @@ def handle_admin_reply(message):
         elif message.content_type == 'photo': bot.send_photo(target_uid, message.photo[-1].file_id, caption=message.caption)
         elif message.content_type == 'sticker': bot.send_sticker(target_uid, message.sticker.file_id)
         elif message.content_type == 'video': bot.send_video(target_uid, message.video.file_id, caption=message.caption)
+        elif message.content_type == 'animation': bot.send_animation(target_uid, message.animation.file_id, caption=message.caption)
+        elif message.content_type == 'audio': bot.send_audio(target_uid, message.audio.file_id, caption=message.caption)
         elif message.content_type == 'voice': bot.send_voice(target_uid, message.voice.file_id)
         elif message.content_type == 'document': bot.send_document(target_uid, message.document.file_id, caption=message.caption)
+        elif message.content_type == 'video_note': bot.send_video_note(target_uid, message.video_note.file_id)
+        elif message.content_type == 'location': bot.send_location(target_uid, message.location.latitude, message.location.longitude)
+        elif message.content_type == 'contact': bot.send_contact(target_uid, phone_number=message.contact.phone_number, first_name=message.contact.first_name)
+        elif message.content_type == 'dice': bot.send_dice(target_uid, emoji=message.dice.emoji)
         m = bot.reply_to(message, "✅ 已发送")
         deleter.schedule(ADMIN_ID, m.message_id, 5)
     except:
@@ -803,7 +804,7 @@ if __name__ == "__main__":
     init_db()
     threading.Thread(target=update_spam_rules, daemon=True).start()
     threading.Thread(target=cleanup_dict, daemon=True).start()
-    logging.info("Bot Started with Enhanced DB Limits and Anti-Edit Spam.")
+    logging.info("Bot Started.")
     while True:
         try: bot.infinity_polling(timeout=20, long_polling_timeout=10)
         except: time.sleep(5)
