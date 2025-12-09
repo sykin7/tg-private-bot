@@ -4,7 +4,7 @@ on:
   push:
     branches: [ "main" ]
     paths:
-      - 'bot.py'
+      - 'new.py'
       - 'Dockerfile'
       - 'requirements.txt'
       - '.github/workflows/**'
@@ -12,6 +12,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
+  IMAGE_NAME: sykin7/newbot
 
 jobs:
   build:
@@ -23,10 +24,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Lowercase Image Name
-        run: |
-          echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> ${GITHUB_ENV}
 
       - name: Log in to the Container registry
         uses: docker/login-action@v3
