@@ -41,6 +41,80 @@ CodexBot 是一个可独立部署的 Telegram 私聊客服/反垃圾机器人。
 3. 准备一台 VPS。
    VPS 需要安装 Docker 和 Docker Compose。
 
+## 已有旧 tg-bot 容器时的一键部署
+
+如果你的 VPS 以前按下面这种方式部署过旧项目：
+
+```bash
+docker run -d --name tg-bot --restart always \
+  -e BOT_TOKEN="..." \
+  -e ADMIN_ID="..." \
+  -v /root/tg-bot-data:/app/data \
+  ghcr.io/sykin7/testrobot:sha-xxxx
+```
+
+并且新旧项目使用同一个 `BOT_TOKEN`，需要先停止旧容器。Telegram bot polling 同一时间只能由一个进程使用，同一个 token 同时跑两个容器会冲突。
+
+推荐先保留旧数据，只停止并删除旧容器：
+
+```bash
+docker stop tg-bot
+docker rm tg-bot
+```
+
+如果想备份旧 SQLite 数据：
+
+```bash
+mkdir -p /root/tg-bot-backup
+cp -a /root/tg-bot-data /root/tg-bot-backup/tg-bot-data-$(date +%F-%H%M%S)
+```
+
+然后部署 CodexBot：
+
+```bash
+cd /opt
+git clone -b codex https://github.com/sykin7/codexbot.git
+cd codexbot
+cp .env.example .env
+nano .env
+chmod +x deploy.sh
+./deploy.sh
+```
+
+`.env` 至少填写：
+
+```env
+BOT_TOKEN=你的BotFatherToken
+ADMIN_ID=你的Telegram数字ID
+POSTGRES_PASSWORD=你的强密码
+```
+
+部署后看日志：
+
+```bash
+docker compose -f docker-compose.bot.yml logs -f codexbot
+```
+
+后期更新：
+
+```bash
+cd /opt/codexbot
+git pull origin codex
+docker compose -f docker-compose.bot.yml up -d --build
+```
+
+重启：
+
+```bash
+docker compose -f docker-compose.bot.yml restart codexbot
+```
+
+停止：
+
+```bash
+docker compose -f docker-compose.bot.yml down
+```
+
 ## 配置 .env
 
 在 VPS 项目目录里执行：
@@ -257,8 +331,3 @@ ghcr.io/sykin7/codexbot:latest
 - `POSTGRES_PASSWORD` 使用强密码。
 - 私有 GHCR 镜像需要在 VPS 上登录后才能拉取。
 - 不需要开放 Redis/PostgreSQL 公网端口。
-
-本项目仅供技术研究与个人安全防护使用。使用者应遵守当地法律法规及 Telegram 服务条款。请勿用于非法用途。
-
-
-
