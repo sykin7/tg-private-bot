@@ -726,6 +726,17 @@ def build_spam_regex(keywords):
     try: return re.compile(pattern, re.IGNORECASE)
     except re.error: return None
 
+def load_fallback_spam_rules():
+    global spam_regex_pattern
+    fallback_regex = build_spam_regex(set(FALLBACK_SPAM_KEYWORDS))
+    if fallback_regex:
+        with _spam_lock:
+            spam_regex_pattern = fallback_regex
+        logging.info(f"Fallback spam rules loaded: {len(FALLBACK_SPAM_KEYWORDS)}")
+        return True
+    logging.warning("Fallback spam rules failed to load.")
+    return False
+
 def update_spam_rules():
     global spam_regex_pattern
     while True:
@@ -859,6 +870,8 @@ def is_spam_text(text):
     text_nospace = re.sub(r'\s+', '', text)
     text_cleaned = re.sub(r'[^\w]', '', text)
     text_compact = normalize_for_spam(text)
+    if spam_regex_pattern is None:
+        load_fallback_spam_rules()
     with _spam_lock:
         if spam_regex_pattern:
             try:
@@ -1419,6 +1432,7 @@ def handle_admin_reply(message):
 if __name__ == "__main__":
     init_db()
     migrate_sqlite_to_postgres_once()
+    load_fallback_spam_rules()
     threading.Thread(target=update_spam_rules, daemon=True).start()
     threading.Thread(target=cleanup_dict, daemon=True).start()
     logging.info("Bot Started.")
