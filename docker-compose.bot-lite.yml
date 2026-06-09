@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  codexbot:
+    image: ghcr.io/sykin7/codexbot:latest
+    container_name: codexbot
+    restart: unless-stopped
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN:?请在 .env 中填写 BOT_TOKEN}
+      ADMIN_ID: ${ADMIN_ID:-}
+      OWNER_ID: ${OWNER_ID:-}
+      REDIS_ENABLED: "false"
+      BOT_DB_PATH: /app/data/bot_core.db
+      CAPTCHA_TEXT_FALLBACK: ${CAPTCHA_TEXT_FALLBACK:-false}
+      WELCOME_ZH: ${WELCOME_ZH:-}
+      VERIFIED_ZH: ${VERIFIED_ZH:-}
+      AUTO_REPLY_ZH: ${AUTO_REPLY_ZH:-}
+      WELCOME_EN: ${WELCOME_EN:-}
+      VERIFIED_EN: ${VERIFIED_EN:-}
+      AUTO_REPLY_EN: ${AUTO_REPLY_EN:-}
+      REMOTE_SPAM_URL: ${REMOTE_SPAM_URL:-}
+    volumes:
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    networks:
+      - bot-network
+
+networks:
+  bot-network:
+    driver: bridge

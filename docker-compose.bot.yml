@@ -1,0 +1,92 @@
+version: '3.8'
+
+services:
+  codexbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: codexbot
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN:?请在 .env 中填写 BOT_TOKEN}
+      ADMIN_ID: ${ADMIN_ID:-}
+      OWNER_ID: ${OWNER_ID:-}
+      REDIS_ENABLED: ${REDIS_ENABLED:-true}
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql://${POSTGRES_USER:-bot_user}:${POSTGRES_PASSWORD:?请在 .env 中填写 POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bot_db}
+      BOT_DB_PATH: /app/data/bot_core.db
+      MIGRATE_SQLITE_TO_POSTGRES: ${MIGRATE_SQLITE_TO_POSTGRES:-false}
+      CAPTCHA_TEXT_FALLBACK: ${CAPTCHA_TEXT_FALLBACK:-false}
+      WELCOME_ZH: ${WELCOME_ZH:-}
+      VERIFIED_ZH: ${VERIFIED_ZH:-}
+      AUTO_REPLY_ZH: ${AUTO_REPLY_ZH:-}
+      WELCOME_EN: ${WELCOME_EN:-}
+      VERIFIED_EN: ${VERIFIED_EN:-}
+      AUTO_REPLY_EN: ${AUTO_REPLY_EN:-}
+      REMOTE_SPAM_URL: ${REMOTE_SPAM_URL:-}
+    volumes:
+      - bot_data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    networks:
+      - bot-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: codexbot-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - bot_redis_data:/data
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    networks:
+      - bot-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: codexbot-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-bot_db}
+      POSTGRES_USER: ${POSTGRES_USER:-bot_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 中填写 POSTGRES_PASSWORD}
+    volumes:
+      - bot_postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    networks:
+      - bot-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bot_user} -d ${POSTGRES_DB:-bot_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  bot_data:
+  bot_redis_data:
+  bot_postgres_data:
+
+networks:
+  bot-network:
+    driver: bridge

@@ -1,66 +1,70 @@
 # CodexBot 专属 VPS Docker 部署与维护方案
 
-这份文档按你当前 VPS 的真实情况整理：已经安装 Docker，使用旧版 `docker-compose` 命令，部署目录固定为 `/opt/codexbot`，镜像使用 `ghcr.io/sykin7/codexbot:latest`。
+这份文档按你当前 VPS 的真实情况整理：Docker 已安装，推荐部署目录为 `/opt/codexbot`，镜像使用 `ghcr.io/sykin7/codexbot:latest`，运行方式推荐单容器 SQLite 轻量版。
 
-最终确认：你的 VPS 使用轻量版部署最合适。之前三容器版 `codexbot + PostgreSQL + Redis` 会让 `codexbot` 很快 `exited with code 137`，也就是被系统强制杀掉，Telegram 看起来就会“没反应”。轻量版只运行一个 `codexbot` 容器，使用 SQLite 保存数据，已经验证能立即恢复正常。
+你这台 VPS 已经验证过：三容器版 `codexbot + PostgreSQL + Redis` 容易触发 `exited with code 137`，也就是内存压力导致容器被系统杀掉。当前最稳方案是只运行一个 `codexbot` 容器，数据保存到 `/opt/codexbot/data/bot_core.db`。
 
-## 当前推荐方案
+## 最终推荐方案
 
 - 只运行 `codexbot` 一个容器。
-- 不运行 PostgreSQL。
 - 不运行 Redis。
-- 数据保存到 `/opt/codexbot/data/bot_core.db`。
-- `.env` 只保存在 VPS，不上传 GitHub，不进入 Docker 镜像。
-- compose 文件不写真实 token 和密码，只从 `.env` 读取。
-- 没有 `ports:` 配置，所以 CodexBot 不会暴露公网端口。
+- 不运行 PostgreSQL。
+- 不暴露任何公网端口。
+- `.env` 只放在 VPS，不上传 GitHub。
+- 数据保存在 `/opt/codexbot/data`。
+- Docker 日志限制为 `50MB x 5`，最多约 `250MB`。
+- 后期更新优先使用 `docker run` 重建，避免老版 `docker-compose` 的兼容问题。
 
-## 1. 停止旧项目
+## 1. 停掉旧机器人
 
-如果旧机器人容器 `tg-bot` 还在运行，先停止并删除旧容器。同一个 `BOT_TOKEN` 不能同时被两个 bot 进程使用，否则 Telegram 会冲突。
+同一个 Telegram Bot Token 不能同时被两个机器人进程使用，否则会出现 `Conflict: terminated by other getUpdates request`。
+
+如果旧容器叫 `tg-bot`，先停掉：
 
 ```bash
-docker stop tg-bot
-docker rm tg-bot
+docker stop tg-bot 2>/dev/null || true
+docker rm tg-bot 2>/dev/null || true
 ```
 
-这只删除容器，不会删除旧数据目录 `/root/tg-bot-data`。
-
-建议备份旧数据：
+如果旧容器叫 `codexbot`，重装前也可以停掉：
 
 ```bash
-mkdir -p /root/tg-bot-backup
-cp -a /root/tg-bot-data /root/tg-bot-backup/tg-bot-data-$(date +%F-%H%M%S)
+docker rm -f codexbot 2>/dev/null || true
 ```
 
-不要执行：
+不要删除你的数据目录：
+
+```text
+/opt/codexbot/data
+```
+
+也不要随便执行：
 
 ```bash
-docker volume prune
 docker system prune
-rm -rf /root/tg-bot-data
+docker volume prune
+rm -rf /opt/codexbot/data
 ```
-
-VPS 上的 `subconverter` 容器和 CodexBot 无关，不要动它。
 
 ## 2. 创建目录
 
 ```bash
-mkdir -p /opt/codexbot
+mkdir -p /opt/codexbot/data
 cd /opt/codexbot
-mkdir -p data
 ```
 
-最终目录结构：
+最终目录应类似：
 
 ```text
 /opt/codexbot/.env
-/opt/codexbot/docker-compose.yml
 /opt/codexbot/data/
 ```
 
+`docker-compose.yml` 可以保留作为记录，但你这台 VPS 后期推荐直接用 `docker run`。
+
 ## 3. 创建 .env
 
-你的 VPS 没有 `nano`，所以直接用 `cat` 创建：
+用 `cat` 创建，不需要 `nano`：
 
 ```bash
 cat > /opt/codexbot/.env <<'EOF'
@@ -68,107 +72,100 @@ BOT_TOKEN=你的BotFatherToken
 ADMIN_ID=你的Telegram数字ID
 OWNER_ID=
 CAPTCHA_TEXT_FALLBACK=false
+REMOTE_SPAM_URL=
 EOF
 ```
 
-然后检查：
+检查：
 
 ```bash
 cat /opt/codexbot/.env
 ```
 
-必须替换成真实值：
+必须替换成真实值，例如：
 
 ```env
 BOT_TOKEN=123456789:AAxxxxxxxxxxxxxxxxxxxxxxxx
 ADMIN_ID=123456789
 OWNER_ID=
 CAPTCHA_TEXT_FALLBACK=false
+REMOTE_SPAM_URL=
 ```
 
 说明：
 
-- `BOT_TOKEN` 从 `@BotFather` 获取。
-- `ADMIN_ID` 是你的 Telegram 数字 ID，可以用 `@userinfobot` 获取。
-- `OWNER_ID` 可以留空，因为已经设置 `ADMIN_ID`。
-- `.env` 只放 VPS 本机，不要上传 GitHub，不要发给别人。
+- `BOT_TOKEN`：从 `@BotFather` 获取。
+- `ADMIN_ID`：你的 Telegram 数字 ID，可以用 `@userinfobot` 获取。
+- `OWNER_ID`：可以留空，已经设置 `ADMIN_ID` 即可。
+- `CAPTCHA_TEXT_FALLBACK=false`：默认使用按钮验证码。
+- `REMOTE_SPAM_URL`：可留空，留空时使用脚本内置和默认规则。
 
-## 4. 创建轻量版 docker-compose.yml
+## 4. 一键启动或重装
 
-直接复制执行：
-
-```bash
-cat > /opt/codexbot/docker-compose.yml <<'EOF'
-version: '3.8'
-
-services:
-  codexbot:
-    image: ghcr.io/sykin7/codexbot:latest
-    container_name: codexbot
-    restart: unless-stopped
-    environment:
-      BOT_TOKEN: ${BOT_TOKEN:?请在 .env 中填写 BOT_TOKEN}
-      ADMIN_ID: ${ADMIN_ID:-}
-      OWNER_ID: ${OWNER_ID:-}
-      REDIS_ENABLED: "false"
-      BOT_DB_PATH: /app/data/bot_core.db
-      CAPTCHA_TEXT_FALLBACK: ${CAPTCHA_TEXT_FALLBACK:-false}
-      WELCOME_ZH: ${WELCOME_ZH:-}
-      VERIFIED_ZH: ${VERIFIED_ZH:-}
-      AUTO_REPLY_ZH: ${AUTO_REPLY_ZH:-}
-      WELCOME_EN: ${WELCOME_EN:-}
-      VERIFIED_EN: ${VERIFIED_EN:-}
-      AUTO_REPLY_EN: ${AUTO_REPLY_EN:-}
-      REMOTE_SPAM_URL: ${REMOTE_SPAM_URL:-}
-    volumes:
-      - ./data:/app/data
-    networks:
-      - bot-network
-
-networks:
-  bot-network:
-    driver: bridge
-EOF
-```
-
-检查文件：
-
-```bash
-cat /opt/codexbot/docker-compose.yml
-```
-
-确认里面没有真实 token，真实 token 只应该在 `/opt/codexbot/.env`。
-
-## 5. 启动 CodexBot
+推荐使用这段命令。它会删除旧 `codexbot` 容器，拉取最新镜像，然后重新启动。不会删除 `/opt/codexbot/data`。
 
 ```bash
 cd /opt/codexbot
-docker-compose pull
-docker-compose up -d
-docker-compose ps
-docker-compose logs -f codexbot
+
+docker rm -f codexbot 2>/dev/null || true
+
+docker pull ghcr.io/sykin7/codexbot:latest
+
+docker run -d \
+  --name codexbot \
+  --restart unless-stopped \
+  --env-file /opt/codexbot/.env \
+  -e REDIS_ENABLED=false \
+  -e BOT_DB_PATH=/app/data/bot_core.db \
+  -v /opt/codexbot/data:/app/data \
+  --log-driver json-file \
+  --log-opt max-size=50m \
+  --log-opt max-file=5 \
+  ghcr.io/sykin7/codexbot:latest
 ```
 
-正常应该看到：
+## 5. 检查是否启动成功
 
-```text
-codexbot   Up
+```bash
+docker ps | grep codexbot
+docker logs --tail=80 codexbot
+docker inspect codexbot --format '{{json .HostConfig.LogConfig}}'
 ```
 
-日志正常类似：
+正常应看到：
 
 ```text
+codexbot   ghcr.io/sykin7/codexbot:latest   Up
 Bot Started.
-Rules Updated.
+Rules Updated: 数量
 ```
 
-退出日志查看：
+日志限制正常应类似：
 
-```text
-Ctrl + C
+```json
+{"Type":"json-file","Config":{"max-file":"5","max-size":"50m"}}
 ```
 
-## 6. Telegram 测试
+## 6. 确认镜像是不是新版代码
+
+如果你发现机器人还是旧菜单、旧指令、管理员功能没有出现，马上执行：
+
+```bash
+docker exec codexbot sh -c "grep -n 'admin_menu_status\|重载广告规则\|封禁名单\|/reloadrules\|/status' /app/bot.py | head -30"
+```
+
+如果没有任何输出，说明 VPS 当前镜像不是最新代码。原因通常是：本地代码还没推到 GitHub，或者 GitHub Actions 还没成功构建新镜像。
+
+正确处理顺序：
+
+1. 本地把最新 `new.py` 推到 GitHub 的 `codex` 分支。
+2. 等 GitHub Actions 构建成功。
+3. VPS 执行第 4 步的一键重装命令。
+4. 再执行上面的 `grep` 检查。
+
+只要 `grep` 没输出，就不是 Telegram 菜单问题，而是容器里的代码还是旧的。
+
+## 7. Telegram 首次测试
 
 给机器人发送：
 
@@ -176,28 +173,59 @@ Ctrl + C
 /start
 /help
 /id
+/status
 ```
 
-`/id` 会返回你的 Telegram 数字 ID。这个 ID 必须和 `/opt/codexbot/.env` 里的 `ADMIN_ID` 一样，否则你不会被识别为管理员。
+`/id` 返回的数字必须和 `/opt/codexbot/.env` 里的 `ADMIN_ID` 一致，否则你不会被识别为管理员。
 
-## 7. 管理员快捷指令
+管理员底部菜单应显示：
+
+```text
+📊 机器人状态
+🔄 重载广告规则
+🚫 封禁名单
+⚪ 白名单
+⚫ 黑名单
+❓ 常见问题
+🌐 切换语言
+```
+
+如果你还是看到普通用户菜单：
+
+```text
+📨 联系管理员
+❓ 常见问题
+🌐 切换语言
+```
+
+按顺序检查：
+
+1. `/id` 是否等于 `.env` 里的 `ADMIN_ID`。
+2. 容器内代码检查命令是否有输出。
+3. GitHub Actions 是否已经构建成功。
+
+## 8. 管理员快捷指令
 
 直接发送：
 
 ```text
 /help
 /id
-/gb 要广播的内容
+/status
+/reloadrules
+/spamtest 测试内容
+/gb 广播内容
 /awl 用户ID
 /dwl 用户ID
 /abl 用户ID
 /dbl 用户ID
+/unban 用户ID
 /vlist wl
 /vlist bl
-/spamtest 要测试的内容
+/vlist ban
 ```
 
-回复用户转发消息时发送：
+回复机器人转发来的用户消息时发送：
 
 ```text
 /ban
@@ -206,106 +234,150 @@ Ctrl + C
 /abl
 ```
 
-说明：
+常用说明：
 
-- `/ban`：封禁该用户 30 天。
-- `/unban`：解封该用户。
-- `/awl`：加入白名单；白名单用户会跳过广告和刷屏检查。
-- `/abl`：加入黑名单。
-- `/gb`：广播给已记录用户。
-- `/vlist wl`：查看白名单。
-- `/vlist bl`：查看黑名单。
-- `/spamtest 内容`：测试广告规则是否命中，不会真的封人，回复里不会回显广告原文。例如 `/spamtest u币`、`/spamtest u 币`、`/spamtest 出U`。
+- `/status`：查看机器人、数据库和广告规则状态。
+- `/reloadrules`：手动重载第三方广告规则。
+- `/spamtest 内容`：测试广告规则是否会拦截，不会真的封禁。
+- `/vlist ban`：查看临时封禁名单，并可按钮解封。
+- `/awl`：加入白名单。白名单会跳过广告和频率检测。
+- `/abl`：加入黑名单。黑名单用户消息会被拒收。
+- `/ban`：临时封禁回复消息对应的用户。
+- `/unban`：解封回复消息对应的用户，或 `/unban 用户ID`。
 
-## 8. 广告屏蔽排查
+## 9. 广告拦截确认
 
-这个机器人不是“通过验证后就不查广告”。普通用户私聊消息的处理顺序是：黑名单检查 -> 白名单判断 -> 刷屏检查 -> 广告检查 -> 验证码/已验证判断 -> 转发给管理员。
-
-所以，通过验证码的用户继续发广告，正常也会被广告规则拦截并封禁。真正会绕过广告检查的是白名单用户。
-
-广告命中后会直接封禁并停止转发，管理员只收到干净的拦截结果，不会再收到广告原文。如果你看到广告还能发到管理员这里，按这个顺序查：
-
-1. 看他是不是白名单：
+普通用户每一条准备转发给管理员的消息，都会先经过广告规则过滤。流程是：
 
 ```text
-/vlist wl
+黑名单检查 -> 白名单判断 -> 频率检查 -> 广告规则检查 -> 人机验证状态判断 -> 转发给管理员
 ```
 
-2. 测试当前规则是否命中：
+重点：
+
+- 通过人机验证后，仍然要经过广告规则。
+- 白名单用户才会跳过广告规则。
+- 命中广告后不会把广告原文转发给管理员。
+- 管理员只收到干净的拦截通知和处理按钮。
+
+测试广告规则：
 
 ```text
 /spamtest u币
 /spamtest u 币
 /spamtest 出U
+/spamtest USDT
 ```
 
-3. 确认 VPS 已经拉到新镜像：
+查看规则状态：
 
-```bash
-cd /opt/codexbot
-docker-compose pull
-docker-compose up -d
-docker-compose logs -f codexbot
+```text
+/status
 ```
 
-日志里看到 `Bot Started.` 后，再用另一个 Telegram 账号给机器人发送测试内容。
+手动重载规则：
 
-## 9. 日常维护
-
-进入目录：
-
-```bash
-cd /opt/codexbot
+```text
+/reloadrules
 ```
 
-查看状态：
+如果第三方规则 URL 加载失败，机器人仍会使用内置兜底规则。你可以用 `/reloadrules` 再次尝试拉取。
+
+## 10. 日志、缓存和数据大小
+
+当前 Docker 日志限制：
 
 ```bash
-docker-compose ps
+--log-driver json-file
+--log-opt max-size=50m
+--log-opt max-file=5
 ```
 
-查看日志：
+含义：最多保留 5 个日志文件，每个 50MB，总计约 250MB。超过后 Docker 自动删除最旧日志。
+
+确认是否生效：
 
 ```bash
-docker-compose logs -f codexbot
+docker inspect codexbot --format '{{json .HostConfig.LogConfig}}'
+```
+
+脚本内部清理机制：
+
+- 消息映射记录会按时间和数量清理。
+- SQLite 数据库会在超过限制后整理压缩。
+- 人机验证、频率限制、自动回复、用户状态等运行时缓存会自动过期。
+- 容器重启后，内存缓存会清空。
+
+不要自动删除整个 `/opt/codexbot/data`，因为里面有白名单、黑名单、封禁记录、用户状态和消息映射数据库。
+
+## 11. 日常维护命令
+
+查看容器：
+
+```bash
+docker ps | grep codexbot
+```
+
+查看最近日志：
+
+```bash
+docker logs --tail=80 codexbot
+```
+
+实时查看日志：
+
+```bash
+docker logs -f codexbot
+```
+
+退出实时日志：
+
+```text
+Ctrl + C
 ```
 
 重启机器人：
 
 ```bash
-docker-compose restart codexbot
+docker restart codexbot
 ```
 
 停止机器人：
 
 ```bash
-docker-compose down
+docker stop codexbot
 ```
 
-重新启动：
+重新启动已停止的机器人：
 
 ```bash
-docker-compose up -d
+docker start codexbot
 ```
 
-更新最新镜像：
+更新镜像并重建：
 
 ```bash
 cd /opt/codexbot
-docker-compose pull
-docker-compose up -d
-docker-compose logs -f codexbot
+
+docker rm -f codexbot 2>/dev/null || true
+docker pull ghcr.io/sykin7/codexbot:latest
+
+docker run -d \
+  --name codexbot \
+  --restart unless-stopped \
+  --env-file /opt/codexbot/.env \
+  -e REDIS_ENABLED=false \
+  -e BOT_DB_PATH=/app/data/bot_core.db \
+  -v /opt/codexbot/data:/app/data \
+  --log-driver json-file \
+  --log-opt max-size=50m \
+  --log-opt max-file=5 \
+  ghcr.io/sykin7/codexbot:latest
 ```
 
-## 10. 备份和恢复
+## 12. 备份和恢复
 
-轻量版数据文件在：
-
-```text
-/opt/codexbot/data/bot_core.db
-```
-
-备份：
+备份 SQLite 数据库：
 
 ```bash
 cd /opt/codexbot
@@ -314,16 +386,16 @@ cp -a data/bot_core.db backup/bot_core-$(date +%F-%H%M%S).db
 ls -lh backup
 ```
 
-恢复时先停 bot，再替换数据库：
+恢复数据库：
 
 ```bash
 cd /opt/codexbot
-docker-compose down
+docker stop codexbot
 cp -a backup/你的备份文件.db data/bot_core.db
-docker-compose up -d
+docker start codexbot
 ```
 
-## 11. 安全确认
+## 13. 公网暴露检查
 
 查看端口：
 
@@ -331,99 +403,151 @@ docker-compose up -d
 docker ps
 ```
 
-CodexBot 不应该出现类似：
+正常情况下，`codexbot` 不应该出现类似：
 
 ```text
 0.0.0.0:5432->5432/tcp
 0.0.0.0:6379->6379/tcp
+0.0.0.0:5000->5000/tcp
 ```
 
-轻量版没有 PostgreSQL 和 Redis，也没有 `ports:`，所以默认不会暴露公网。
+当前推荐 `docker run` 命令没有 `-p` 参数，所以不会主动暴露公网端口。
 
-## 12. 常见问题
+## 14. 常见问题
 
-### docker: unknown command: docker compose
+### docker compose up -d 报 unknown shorthand flag: 'd'
 
-你的 VPS 使用旧版 Compose，命令是：
-
-```bash
-docker-compose up -d
-```
-
-不是：
+你的服务器不支持新版 `docker compose` 插件。不要用：
 
 ```bash
 docker compose up -d
 ```
 
-### nano: command not found
+可以用旧命令：
 
-你的 VPS 没装 `nano`。用本文档里的 `cat > 文件 <<'EOF'` 方式创建文件即可。
+```bash
+docker-compose up -d
+```
 
-### codexbot exited with code 137
+但你的 VPS 已经遇到过老版 compose 的兼容问题，所以后期更推荐本文第 4 步的 `docker run`。
 
-这表示容器被系统强制杀掉，常见原因是内存不足。你已经验证轻量版可以解决这个问题。
+### docker-compose up -d 报 KeyError: 'ContainerConfig'
 
-确认当前只运行一个 bot 容器：
+这是老版 `docker-compose 1.29.2` 常见兼容问题，不是 `new.py` 写坏了。
+
+你的实际解决方案是绕开 compose，用 `docker run` 重建：
 
 ```bash
 cd /opt/codexbot
-docker-compose ps
+docker rm -f codexbot 2>/dev/null || true
+docker pull ghcr.io/sykin7/codexbot:latest
 ```
 
-如果还看到 `codexbot-postgres` 或 `codexbot-redis`，说明还在用三容器旧 compose。执行：
+然后执行第 4 步完整 `docker run` 命令。
+
+### 容器启动了，但 Telegram 没反应
+
+先看日志：
 
 ```bash
-cd /opt/codexbot
-docker-compose down
+docker logs --tail=120 codexbot
 ```
 
-然后按本文档第 4 步重新写入轻量版 `docker-compose.yml`。
+常见原因：
+
+- `BOT_TOKEN` 错误。
+- `ADMIN_ID` 错误。
+- 旧容器还在使用同一个 token。
+- 镜像不是最新版。
+- VPS 网络无法访问 Telegram。
+
+检查旧容器：
+
+```bash
+docker ps -a
+```
+
+停掉旧 `tg-bot`：
+
+```bash
+docker stop tg-bot 2>/dev/null || true
+docker rm tg-bot 2>/dev/null || true
+docker restart codexbot
+```
+
+### 管理员菜单没有出现
+
+先发：
+
+```text
+/id
+```
+
+确认返回值等于 `/opt/codexbot/.env` 里的 `ADMIN_ID`。
+
+再检查容器代码：
+
+```bash
+docker exec codexbot sh -c "grep -n 'admin_menu_status\|重载广告规则\|封禁名单\|/reloadrules\|/status' /app/bot.py | head -30"
+```
+
+如果没有输出，就是镜像旧，不是管理员权限问题。
 
 ### BOT_TOKEN and ADMIN_ID must be set
 
 检查 `.env`：
 
 ```bash
-cd /opt/codexbot
-cat .env
+cat /opt/codexbot/.env
 ```
 
-确认至少有：
+至少要有：
 
 ```env
-BOT_TOKEN=你的真实Token
+BOT_TOKEN=真实Token
 ADMIN_ID=你的Telegram数字ID
 ```
 
 ### Unauthorized
 
-`BOT_TOKEN` 错了，重新去 `@BotFather` 检查。
+`BOT_TOKEN` 错误，回 `@BotFather` 重新确认。
 
 ### Conflict: terminated by other getUpdates request
 
-还有另一个容器或程序在用同一个 bot token。
-
-检查：
+还有另一个容器或程序在使用同一个 Telegram Bot Token。
 
 ```bash
 docker ps -a
 ```
 
-停掉旧容器：
+停掉旧容器后重启：
 
 ```bash
-docker stop tg-bot
-docker rm tg-bot
-docker-compose restart codexbot
+docker stop tg-bot 2>/dev/null || true
+docker rm tg-bot 2>/dev/null || true
+docker restart codexbot
 ```
 
-## 13. 进阶：什么时候才需要 PostgreSQL 和 Redis
+### codexbot exited with code 137
 
-只有这些情况才建议使用三容器版：
+这是容器被系统强制杀掉，通常是内存不足。保持单容器 SQLite 轻量版，不要默认启用 Redis + PostgreSQL。
 
-- VPS 内存足够。
-- 需要更强的数据持久化和迁移能力。
-- 未来计划多实例或更复杂的部署。
+检查：
 
-你当前这个 VPS 已经出现过 `code 137`，所以不要默认使用 PostgreSQL + Redis 方案。保持轻量版更稳。
+```bash
+docker inspect codexbot --format '{{.State.OOMKilled}} {{.State.ExitCode}} {{.State.Error}}'
+free -h
+```
+
+## 15. 后期正确更新流程
+
+本地代码改完后：
+
+1. 确认只维护 `new.py`，不要再恢复 `机器.py`。
+2. 本地执行 `python -m py_compile new.py`。
+3. 推送到 GitHub 的 `codex` 分支。
+4. 等 GitHub Actions 构建 `ghcr.io/sykin7/codexbot:latest` 成功。
+5. VPS 执行第 11 节“更新镜像并重建”。
+6. 用第 6 节 `grep` 命令确认容器里是新版代码。
+7. Telegram 发送 `/status`、`/help`、`/reloadrules` 检查功能。
+
