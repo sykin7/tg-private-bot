@@ -1,310 +1,294 @@
 # CodexBot
 
-CodexBot 是一个可独立部署的 Telegram 私聊客服/反垃圾机器人。项目包含 Dockerfile、Docker Compose、Redis、PostgreSQL 和 GitHub Actions 镜像构建配置，可以部署到 VPS 的 Docker 环境长期运行。
+CodexBot 是一个可独立部署的 Telegram 私聊客服 / 反垃圾机器人。它支持私聊转发、管理员回复、验证码、黑白名单、广播、基础反垃圾规则和 Docker 部署。
 
-## 重要安全说明
+普通 VPS 或低内存 VPS 推荐使用轻量版：只运行一个 `codexbot` 容器，使用 SQLite 保存数据。你当前 VPS 已经验证过，三容器版 `codexbot + PostgreSQL + Redis` 会触发 `exited with code 137`，轻量版可以正常运行。
 
-不要把真实 `BOT_TOKEN`、`POSTGRES_PASSWORD`、GitHub Token 或其他密码写进镜像，也不要提交到 GitHub。
+## 重要结论
 
-本项目的正确做法是：
+- 推荐部署文件：`docker-compose.bot-lite.yml`
+- 进阶部署文件：`docker-compose.bot.yml`
+- 推荐镜像：`ghcr.io/sykin7/codexbot:latest`
+- 推荐 VPS 目录：`/opt/codexbot`
+- 你的专属部署文档：[VPS-DEPLOYMENT.md](VPS-DEPLOYMENT.md)
+
+## 安全说明
+
+不要把真实 `BOT_TOKEN`、`ADMIN_ID`、数据库密码、GitHub Token 或其他密码写进镜像，也不要提交到 GitHub。
+
+正确做法：
 
 - 镜像只包含代码和 Python 依赖。
-- `.env.example` 只放示例和说明，可以提交。
-- 真实 `.env` 只放在 VPS 本机，不提交，不打包进镜像。
-- `docker-compose.bot.yml` 在容器启动时从 VPS 的 `.env` 读取变量，再传给容器运行时。
-
-项目已经加入：
-
-- `.gitignore`: 防止 `.env` 被误提交。
-- `.dockerignore`: 防止 `.env` 被发送到 Docker 构建上下文。
-
-所以你在 VPS 上部署时，应当复制 `.env.example` 为 `.env`，然后只在 `.env` 里填写真实密钥。
+- `.env.example` 只放示例和中文说明，可以提交。
+- 真实 `.env` 只放在 VPS 本机。
+- `docker-compose.yml` 启动时从 VPS 的 `.env` 读取变量。
+- `.gitignore` 已排除 `.env`。
+- `.dockerignore` 已防止 `.env` 进入 Docker 构建上下文。
 
 ## 项目文件
 
-- `new.py`: Docker 默认运行入口，内容应与 `机器.py` 保持一致。
+- `new.py`: Docker 镜像默认运行入口，内容应与 `机器.py` 保持一致。
 - `机器.py`: 机器人主脚本，方便本地阅读或运行。
 - `requirements.txt`: Python 依赖。
 - `Dockerfile`: 构建 CodexBot 镜像。
-- `docker-compose.bot.yml`: 运行 CodexBot、Redis、PostgreSQL。
+- `docker-compose.bot-lite.yml`: 推荐部署方式，只运行 CodexBot，使用 SQLite。
+- `docker-compose.bot.yml`: 进阶部署方式，运行 CodexBot、Redis、PostgreSQL。
 - `.env.example`: 中文环境变量示例，不填写真实密钥。
 - `.github/workflows/build.yml`: 自动构建并发布镜像到 GHCR。
+- `VPS-DEPLOYMENT.md`: 按你当前 VPS 情况写好的专属部署维护文档。
 
 ## 准备工作
 
-1. 创建 Telegram 机器人。
-   在 Telegram 找 `@BotFather` 创建 bot，拿到 `BOT_TOKEN`。
+1. 在 Telegram 找 `@BotFather` 创建机器人，拿到 `BOT_TOKEN`。
+2. 找 `@userinfobot` 获取你的 Telegram 数字 ID，填到 `ADMIN_ID`。
+3. VPS 已安装 Docker 和旧版 `docker-compose`。
+4. 如果旧容器 `tg-bot` 还在使用同一个 token，必须先停止它。
 
-2. 获取你的 Telegram 数字 ID。
-   可以找 `@userinfobot` 获取，填到 `ADMIN_ID`。
-
-3. 准备一台 VPS。
-   VPS 需要安装 Docker 和 Docker Compose。
-
-## 已有旧 tg-bot 容器时的一键部署
-
-如果你的 VPS 以前按下面这种方式部署过旧项目：
-
-```bash
-docker run -d --name tg-bot --restart always \
-  -e BOT_TOKEN="..." \
-  -e ADMIN_ID="..." \
-  -v /root/tg-bot-data:/app/data \
-  ghcr.io/sykin7/testrobot:sha-xxxx
-```
-
-并且新旧项目使用同一个 `BOT_TOKEN`，需要先停止旧容器。Telegram bot polling 同一时间只能由一个进程使用，同一个 token 同时跑两个容器会冲突。
-
-推荐先保留旧数据，只停止并删除旧容器：
+停止旧容器：
 
 ```bash
 docker stop tg-bot
 docker rm tg-bot
 ```
 
-如果想备份旧 SQLite 数据：
+## 推荐部署：轻量版
+
+适合普通 VPS、低内存 VPS、单机器人长期运行。
+
+在 VPS 执行：
 
 ```bash
-mkdir -p /root/tg-bot-backup
-cp -a /root/tg-bot-data /root/tg-bot-backup/tg-bot-data-$(date +%F-%H%M%S)
+mkdir -p /opt/codexbot
+cd /opt/codexbot
+mkdir -p data
 ```
 
-然后部署 CodexBot：
+创建 `.env`：
 
 ```bash
-cd /opt
-git clone -b codex https://github.com/sykin7/codexbot.git
-cd codexbot
-cp .env.example .env
-nano .env
-chmod +x deploy.sh
-./deploy.sh
-```
-
-`.env` 至少填写：
-
-```env
+cat > /opt/codexbot/.env <<'EOF'
 BOT_TOKEN=你的BotFatherToken
 ADMIN_ID=你的Telegram数字ID
-POSTGRES_PASSWORD=你的强密码
+OWNER_ID=
+CAPTCHA_TEXT_FALLBACK=false
+EOF
 ```
 
-部署后看日志：
+创建 `docker-compose.yml`：
 
 ```bash
-docker compose -f docker-compose.bot.yml logs -f codexbot
+cat > /opt/codexbot/docker-compose.yml <<'EOF'
+version: '3.8'
+
+services:
+  codexbot:
+    image: ghcr.io/sykin7/codexbot:latest
+    container_name: codexbot
+    restart: unless-stopped
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN:?请在 .env 中填写 BOT_TOKEN}
+      ADMIN_ID: ${ADMIN_ID:-}
+      OWNER_ID: ${OWNER_ID:-}
+      REDIS_ENABLED: "false"
+      BOT_DB_PATH: /app/data/bot_core.db
+      CAPTCHA_TEXT_FALLBACK: ${CAPTCHA_TEXT_FALLBACK:-false}
+      WELCOME_ZH: ${WELCOME_ZH:-}
+      VERIFIED_ZH: ${VERIFIED_ZH:-}
+      AUTO_REPLY_ZH: ${AUTO_REPLY_ZH:-}
+      WELCOME_EN: ${WELCOME_EN:-}
+      VERIFIED_EN: ${VERIFIED_EN:-}
+      AUTO_REPLY_EN: ${AUTO_REPLY_EN:-}
+      REMOTE_SPAM_URL: ${REMOTE_SPAM_URL:-}
+    volumes:
+      - ./data:/app/data
+    networks:
+      - bot-network
+
+networks:
+  bot-network:
+    driver: bridge
+EOF
 ```
 
-后期更新：
+启动：
 
 ```bash
 cd /opt/codexbot
-git pull origin codex
-docker compose -f docker-compose.bot.yml up -d --build
+docker-compose pull
+docker-compose up -d
+docker-compose ps
+docker-compose logs -f codexbot
 ```
 
-重启：
+正常状态：
+
+```text
+codexbot   Up
+```
+
+正常日志：
+
+```text
+Bot Started.
+Rules Updated.
+```
+
+退出日志查看：`Ctrl + C`。
+
+## Telegram 测试
+
+给机器人发送：
+
+```text
+/start
+/help
+/id
+```
+
+`/id` 返回的数字 ID 必须和 `.env` 里的 `ADMIN_ID` 一致，否则你不会被识别为管理员。
+
+## 管理员快捷指令
+
+直接发送：
+
+```text
+/help
+/id
+/gb 要广播的内容
+/awl 用户ID
+/dwl 用户ID
+/abl 用户ID
+/dbl 用户ID
+/vlist wl
+/vlist bl
+```
+
+回复机器人转发来的用户消息时发送：
+
+```text
+/ban
+/unban
+/awl
+/abl
+```
+
+## 日常维护
+
+进入目录：
 
 ```bash
-docker compose -f docker-compose.bot.yml restart codexbot
-```
-
-停止：
-
-```bash
-docker compose -f docker-compose.bot.yml down
-```
-
-## 配置 .env
-
-在 VPS 项目目录里执行：
-
-```bash
-cp .env.example .env
-nano .env
-```
-
-至少填写：
-
-```env
-BOT_TOKEN=你的BotFatherToken
-ADMIN_ID=你的Telegram数字ID
-POSTGRES_PASSWORD=换成强密码
-CAPTCHA_TEXT_FALLBACK=false
-```
-
-注意：`.env` 只留在 VPS，不要提交到 GitHub。
-
-## 方式一：VPS 使用源码构建部署
-
-适合第一次部署，简单直接。
-
-```bash
-git clone -b codex https://github.com/sykin7/codexbot.git
-cd codexbot
-cp .env.example .env
-nano .env
-docker compose -f docker-compose.bot.yml up -d --build
-```
-
-查看日志：
-
-```bash
-docker compose -f docker-compose.bot.yml logs -f codexbot
+cd /opt/codexbot
 ```
 
 查看状态：
 
 ```bash
-docker compose -f docker-compose.bot.yml ps
+docker-compose ps
 ```
-
-停止服务：
-
-```bash
-docker compose -f docker-compose.bot.yml down
-```
-
-更新代码并重新部署：
-
-```bash
-git pull
-docker compose -f docker-compose.bot.yml up -d --build
-```
-
-## 方式二：VPS 使用 GitHub Actions 构建好的镜像
-
-GitHub Actions 会发布镜像到：
-
-```text
-ghcr.io/sykin7/codexbot:latest
-ghcr.io/sykin7/codexbot:sha-<commit>
-```
-
-如果镜像是公开的，VPS 可以直接拉取：
-
-```bash
-docker pull ghcr.io/sykin7/codexbot:latest
-```
-
-如果镜像是私有的，先登录 GHCR：
-
-```bash
-echo YOUR_GITHUB_TOKEN | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
-docker pull ghcr.io/sykin7/codexbot:latest
-```
-
-`YOUR_GITHUB_TOKEN` 需要有读取 package 的权限。
-
-如果要直接使用 GHCR 镜像，把 `docker-compose.bot.yml` 里的 CodexBot 服务从：
-
-```yaml
-build:
-  context: .
-  dockerfile: Dockerfile
-```
-
-改成：
-
-```yaml
-image: ghcr.io/sykin7/codexbot:latest
-```
-
-然后部署：
-
-```bash
-docker compose -f docker-compose.bot.yml pull
-docker compose -f docker-compose.bot.yml up -d
-```
-
-这个方式同样不会把 `.env` 写进镜像。镜像启动时才会从 VPS 本机 `.env` 读取真实变量。
-
-## 推荐 VPS 目录
-
-```bash
-mkdir -p /opt/codexbot
-cd /opt/codexbot
-```
-
-如果使用源码构建，目录里需要：
-
-```text
-Dockerfile
-new.py
-requirements.txt
-docker-compose.bot.yml
-.env
-```
-
-如果使用 GHCR 镜像，目录里只需要：
-
-```text
-docker-compose.bot.yml
-.env
-```
-
-## 服务和数据
-
-Compose 会启动三个服务：
-
-- `codexbot`: Telegram 机器人。
-- `redis`: 限流、验证码冷却等临时状态。
-- `postgres`: 持久化数据。
-
-数据保存在 Docker volumes：
-
-- `bot_data`
-- `bot_redis_data`
-- `bot_postgres_data`
-
-Redis 和 PostgreSQL 默认不暴露公网端口，只在 Docker 内部网络给 CodexBot 使用。
-
-## 从 SQLite 迁移到 PostgreSQL
-
-如果你以前有旧的 SQLite 数据库 `/app/data/bot_core.db`，第一次启动时设置：
-
-```env
-MIGRATE_SQLITE_TO_POSTGRES=true
-```
-
-确认日志显示迁移完成后，改回：
-
-```env
-MIGRATE_SQLITE_TO_POSTGRES=false
-```
-
-然后重启：
-
-```bash
-docker compose -f docker-compose.bot.yml restart codexbot
-```
-
-## 常用命令
 
 查看日志：
 
 ```bash
-docker compose -f docker-compose.bot.yml logs -f codexbot
+docker-compose logs -f codexbot
 ```
 
-重启 bot：
+重启：
 
 ```bash
-docker compose -f docker-compose.bot.yml restart codexbot
+docker-compose restart codexbot
 ```
 
-更新镜像并重启：
+停止：
 
 ```bash
-docker compose -f docker-compose.bot.yml pull
-docker compose -f docker-compose.bot.yml up -d
+docker-compose down
 ```
 
-备份 PostgreSQL：
+更新镜像：
 
 ```bash
-docker compose -f docker-compose.bot.yml exec postgres pg_dump -U bot_user bot_db > bot_db_backup.sql
+docker-compose pull
+docker-compose up -d
+docker-compose logs -f codexbot
 ```
+
+## 备份数据
+
+轻量版数据文件：
+
+```text
+/opt/codexbot/data/bot_core.db
+```
+
+备份：
+
+```bash
+cd /opt/codexbot
+mkdir -p backup
+cp -a data/bot_core.db backup/bot_core-$(date +%F-%H%M%S).db
+ls -lh backup
+```
+
+恢复：
+
+```bash
+cd /opt/codexbot
+docker-compose down
+cp -a backup/你的备份文件.db data/bot_core.db
+docker-compose up -d
+```
+
+## code 137 说明
+
+如果日志出现：
+
+```text
+codexbot exited with code 137
+```
+
+说明容器被系统强制杀掉，通常是 VPS 内存不足。你当前 VPS 的实际情况就是三容器版资源压力过大，所以应保持轻量版部署。
+
+确认当前只运行一个 bot 容器：
+
+```bash
+cd /opt/codexbot
+docker-compose ps
+```
+
+如果看到 `codexbot-postgres` 或 `codexbot-redis`，说明还在用三容器旧配置。执行：
+
+```bash
+docker-compose down
+```
+
+然后重新写入轻量版 `docker-compose.yml`。
+
+## 公网暴露说明
+
+轻量版没有 `ports:` 配置，不会把 bot、SQLite 或任何内部服务暴露到公网。
+
+检查：
+
+```bash
+docker ps
+```
+
+CodexBot 不应该出现类似：
+
+```text
+0.0.0.0:5432->5432/tcp
+0.0.0.0:6379->6379/tcp
+```
+
+## 进阶部署
+
+`docker-compose.bot.yml` 会启动：
+
+- `codexbot`
+- `redis`
+- `postgres`
+
+只有在 VPS 内存足够、需要 PostgreSQL 持久化或未来计划复杂部署时才建议使用。你当前 VPS 已经验证过三容器版会触发 `code 137`，所以不要默认使用它。
 
 ## GitHub Actions
 
@@ -322,12 +306,60 @@ workflow 文件在 `.github/workflows/build.yml`。
 ghcr.io/sykin7/codexbot:latest
 ```
 
-如果 Actions 页面出现 Node.js 20 deprecated 警告，通常是某个 action 版本还没有完全切到 Node.js 24。构建成功时不影响使用。本项目已使用 `docker/build-push-action@v6`。
+## 常见问题
 
-## 安全检查清单
+### docker: unknown command: docker compose
 
-- `.env` 不提交到 GitHub。
-- `.env` 不进入 Docker 镜像。
-- `POSTGRES_PASSWORD` 使用强密码。
-- 私有 GHCR 镜像需要在 VPS 上登录后才能拉取。
-- 不需要开放 Redis/PostgreSQL 公网端口。
+你的 VPS 使用旧版 Compose，命令是：
+
+```bash
+docker-compose up -d
+```
+
+不是：
+
+```bash
+docker compose up -d
+```
+
+### nano: command not found
+
+你的 VPS 没装 `nano`。用本文档里的 `cat > 文件 <<'EOF'` 方式创建文件。
+
+### BOT_TOKEN and ADMIN_ID must be set
+
+检查：
+
+```bash
+cd /opt/codexbot
+cat .env
+```
+
+确认至少有：
+
+```env
+BOT_TOKEN=你的真实Token
+ADMIN_ID=你的Telegram数字ID
+```
+
+### Unauthorized
+
+`BOT_TOKEN` 错了，重新去 `@BotFather` 检查。
+
+### Conflict: terminated by other getUpdates request
+
+还有另一个容器或程序在用同一个 bot token。
+
+检查：
+
+```bash
+docker ps -a
+```
+
+停掉旧容器：
+
+```bash
+docker stop tg-bot
+docker rm tg-bot
+docker-compose restart codexbot
+```
