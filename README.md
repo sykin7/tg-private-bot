@@ -25,6 +25,73 @@ CodexBot 是一个可 Docker 部署的 Telegram 私聊客服与反垃圾机器�
 - 轻量部署不配置 `ports:`，机器人不会把数据库或内部服务暴露到公网。
 - 不要执行会误删数据的清理命令，例如 `docker system prune`、`docker volume prune`，除非你清楚影响范围。
 
+## 环境变量总表
+
+这些是 `new.py` 当前实际会读取的变量。生产环境只在 VPS 的 `/opt/codexbot/.env` 里填写真实值，不要写进 GitHub。
+
+| 变量名 | 必填 | 推荐值 / 默认值 | 用法说明 |
+| :--- | :---: | :--- | :--- |
+| `BOT_TOKEN` | 是 | 无 | BotFather 给你的 Telegram Bot Token。必须填写。 |
+| `ADMIN_ID` | 是 | 无 | 管理员 Telegram 数字 ID。推荐使用这个变量。 |
+| `OWNER_ID` | 否 | 空 | 备用管理员 ID。`ADMIN_ID` 为空时才会用它。 |
+| `REDIS_ENABLED` | 否 | 轻量版填 `false` | 是否启用 Redis。你的 VPS 推荐 `false`，使用内存缓存即可。 |
+| `BOT_DB_PATH` | 否 | `/app/data/bot_core.db` | SQLite 数据库路径。Docker 轻量版不要改。 |
+| `CAPTCHA_TEXT_FALLBACK` | 否 | `false` | 是否允许用户用文本数字回答验证码。生产环境建议 `false`，只用按钮验证。 |
+| `REMOTE_SPAM_URL` | 否 | 空或默认规则地址 | 第三方广告规则 TXT 地址。留空时使用代码里的默认地址和内置兜底规则。 |
+| `WELCOME_ZH` | 否 | 代码默认中文欢迎语 | 自定义中文欢迎语。留空即可。 |
+| `VERIFIED_ZH` | 否 | 代码默认中文验证通过语 | 自定义中文验证通过提示。留空即可。 |
+| `AUTO_REPLY_ZH` | 否 | 代码默认中文已送达提示 | 用户消息转发后，机器人给用户的中文自动回馈。留空即可。 |
+| `WELCOME_EN` | 否 | 代码默认英文欢迎语 | 自定义英文欢迎语。留空即可。 |
+| `VERIFIED_EN` | 否 | 代码默认英文验证通过语 | 自定义英文验证通过提示。留空即可。 |
+| `AUTO_REPLY_EN` | 否 | 代码默认英文已送达提示 | 用户消息转发后，机器人给用户的英文自动回馈。留空即可。 |
+| `DATABASE_URL` | 否 | 空 | PostgreSQL 连接串。轻量版不用填。 |
+| `POSTGRES_DSN` | 否 | 空 | `DATABASE_URL` 的备用名称。轻量版不用填。 |
+| `REDIS_URL` | 否 | 空 | Redis 连接地址。轻量版不用填。 |
+| `MIGRATE_SQLITE_TO_POSTGRES` | 否 | `false` | 只有从 SQLite 迁移到 PostgreSQL 时才临时设为 `true`。你的轻量版保持 `false`。 |
+
+你的 VPS 推荐 `.env` 最小配置：
+
+```env
+BOT_TOKEN=你的BotFatherToken
+ADMIN_ID=你的Telegram数字ID
+OWNER_ID=
+REDIS_ENABLED=false
+BOT_DB_PATH=/app/data/bot_core.db
+CAPTCHA_TEXT_FALLBACK=false
+REMOTE_SPAM_URL=
+```
+
+一般只需要改 `BOT_TOKEN`、`ADMIN_ID`、`REMOTE_SPAM_URL` 和自定义提示语。不要在 `.env.example` 里填写真实 token。
+
+VPS 上一键覆盖写入 `.env`：
+
+```bash
+cat > /opt/codexbot/.env <<'EOF'
+BOT_TOKEN=你的BotFatherToken
+ADMIN_ID=你的Telegram数字ID
+OWNER_ID=
+REDIS_ENABLED=false
+BOT_DB_PATH=/app/data/bot_core.db
+CAPTCHA_TEXT_FALLBACK=false
+REMOTE_SPAM_URL=
+EOF
+```
+
+如果只是追加自定义提示语，可以用：
+
+```bash
+cat >> /opt/codexbot/.env <<'EOF'
+WELCOME_ZH=👋 您好，请直接发送消息，管理员看到后会回复。
+VERIFIED_ZH=✅ 验证通过，可以发送消息了。
+AUTO_REPLY_ZH=✅ 已送达，管理员会尽快回复。
+WELCOME_EN=👋 Hello, please send your message directly.
+VERIFIED_EN=✅ Verified. You can now send messages.
+AUTO_REPLY_EN=✅ Message sent. The admin will reply shortly.
+EOF
+```
+
+如果要修改已经写过的变量，推荐重新执行“覆盖写入 `.env`”那段命令，避免同一个变量在 `.env` 里出现多次。
+
 ## 项目文件
 
 - `new.py`：机器人主脚本，本项目只维护这个文件。
@@ -220,4 +287,3 @@ docker ps | grep codexbot
 docker logs --tail=80 codexbot
 docker inspect codexbot --format '{{json .HostConfig.LogConfig}}'
 ```
-

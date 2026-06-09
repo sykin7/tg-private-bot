@@ -71,6 +71,8 @@ cat > /opt/codexbot/.env <<'EOF'
 BOT_TOKEN=你的BotFatherToken
 ADMIN_ID=你的Telegram数字ID
 OWNER_ID=
+REDIS_ENABLED=false
+BOT_DB_PATH=/app/data/bot_core.db
 CAPTCHA_TEXT_FALLBACK=false
 REMOTE_SPAM_URL=
 EOF
@@ -88,6 +90,8 @@ cat /opt/codexbot/.env
 BOT_TOKEN=123456789:AAxxxxxxxxxxxxxxxxxxxxxxxx
 ADMIN_ID=123456789
 OWNER_ID=
+REDIS_ENABLED=false
+BOT_DB_PATH=/app/data/bot_core.db
 CAPTCHA_TEXT_FALLBACK=false
 REMOTE_SPAM_URL=
 ```
@@ -97,8 +101,78 @@ REMOTE_SPAM_URL=
 - `BOT_TOKEN`：从 `@BotFather` 获取。
 - `ADMIN_ID`：你的 Telegram 数字 ID，可以用 `@userinfobot` 获取。
 - `OWNER_ID`：可以留空，已经设置 `ADMIN_ID` 即可。
+- `REDIS_ENABLED=false`：你的 VPS 推荐轻量单容器部署，不启用 Redis。
+- `BOT_DB_PATH=/app/data/bot_core.db`：容器内 SQLite 数据库路径，配合 `-v /opt/codexbot/data:/app/data` 使用，不要随便改。
 - `CAPTCHA_TEXT_FALLBACK=false`：默认使用按钮验证码。
 - `REMOTE_SPAM_URL`：可留空，留空时使用脚本内置和默认规则。
+
+### .env 变量怎么改
+
+常用变量：
+
+| 变量名 | 是否建议修改 | 说明 |
+| :--- | :---: | :--- |
+| `BOT_TOKEN` | 必须改 | 你的 BotFather Token。换机器人时才改。 |
+| `ADMIN_ID` | 必须改 | 你的 Telegram 数字 ID。管理员菜单、封禁、广播都靠它识别。 |
+| `OWNER_ID` | 通常不改 | 备用管理员 ID。已经填了 `ADMIN_ID` 就可以留空。 |
+| `REDIS_ENABLED` | 不建议改 | 你的轻量部署固定用 `false`。改成 `true` 但没有 Redis 容器会出问题。 |
+| `BOT_DB_PATH` | 不建议改 | 固定 `/app/data/bot_core.db`，数据实际落在 VPS 的 `/opt/codexbot/data`。 |
+| `CAPTCHA_TEXT_FALLBACK` | 不建议改 | 保持 `false`，用户只能点按钮验证，减少乱猜答案。 |
+| `REMOTE_SPAM_URL` | 可选 | 自定义第三方广告规则 TXT 地址。留空用默认规则。 |
+| `WELCOME_ZH` | 可选 | 自定义中文欢迎语。不填就用默认文案。 |
+| `VERIFIED_ZH` | 可选 | 自定义中文验证通过提示。不填就用默认文案。 |
+| `AUTO_REPLY_ZH` | 可选 | 自定义中文“消息已送达”提示。不填就用默认文案。 |
+| `WELCOME_EN` | 可选 | 自定义英文欢迎语。不填就用默认文案。 |
+| `VERIFIED_EN` | 可选 | 自定义英文验证通过提示。不填就用默认文案。 |
+| `AUTO_REPLY_EN` | 可选 | 自定义英文“Message sent”提示。不填就用默认文案。 |
+
+### 一键写入 .env
+
+第一次部署或想重新整理 `.env` 时，推荐直接覆盖写入。执行前把 `BOT_TOKEN` 和 `ADMIN_ID` 换成你的真实值：
+
+```bash
+cat > /opt/codexbot/.env <<'EOF'
+BOT_TOKEN=你的BotFatherToken
+ADMIN_ID=你的Telegram数字ID
+OWNER_ID=
+REDIS_ENABLED=false
+BOT_DB_PATH=/app/data/bot_core.db
+CAPTCHA_TEXT_FALLBACK=false
+REMOTE_SPAM_URL=
+EOF
+```
+
+如果你要同时自定义提示语，用这个完整版本覆盖写入：
+
+```bash
+cat > /opt/codexbot/.env <<'EOF'
+BOT_TOKEN=你的BotFatherToken
+ADMIN_ID=你的Telegram数字ID
+OWNER_ID=
+REDIS_ENABLED=false
+BOT_DB_PATH=/app/data/bot_core.db
+CAPTCHA_TEXT_FALLBACK=false
+REMOTE_SPAM_URL=
+WELCOME_ZH=👋 您好，请直接发送消息，管理员看到后会回复。
+VERIFIED_ZH=✅ 验证通过，可以发送消息了。
+AUTO_REPLY_ZH=✅ 已送达，管理员会尽快回复。
+WELCOME_EN=👋 Hello, please send your message directly.
+VERIFIED_EN=✅ Verified. You can now send messages.
+AUTO_REPLY_EN=✅ Message sent. The admin will reply shortly.
+EOF
+```
+
+如果只是临时追加新变量，可以用 `cat >>`，但不要重复追加已经存在的变量：
+
+```bash
+cat >> /opt/codexbot/.env <<'EOF'
+REMOTE_SPAM_URL=https://你的广告规则地址/spam.txt
+EOF
+```
+
+更稳的做法是使用上面的完整覆盖写入，让每个变量只出现一次。
+
+修改 `.env` 后必须重建或重启容器才会生效。稳妥做法是执行本文第 11 节“更新镜像并重建”的完整 `docker run` 命令。
 
 ## 4. 一键启动或重装
 
@@ -550,4 +624,3 @@ free -h
 5. VPS 执行第 11 节“更新镜像并重建”。
 6. 用第 6 节 `grep` 命令确认容器里是新版代码。
 7. Telegram 发送 `/status`、`/help`、`/reloadrules` 检查功能。
-
