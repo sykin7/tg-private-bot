@@ -44,20 +44,29 @@ VERIFIED_EN = os.environ.get('VERIFIED_EN') or "✅ Verified! You can now send m
 AUTO_REPLY_EN = os.environ.get('AUTO_REPLY_EN') or "✅ Message sent. The admin will reply shortly."
 
 FALLBACK_SPAM_KEYWORDS = [
-    "u币", "USDT", "泰达币", "跑分", "博彩", "兼职", "刷单", "各行各业", "代开",
+    "u币", "u 币", "U币", "USDT", "泰达币", "虚拟币", "数字货币", "卖币", "买币", "换u",
+    "出u", "收u", "卖u", "买u", "高价收u", "低价出u", "跑分", "博彩", "兼职", "刷单", "各行各业", "代开",
     "发票", "迷药", "枪支", "色情", "裸聊", "办证", "查询", "定位", "监听",
-    "傻逼", "出u", "收u", "高价收"
+    "傻逼", "高价收"
 ]
 
 SPAM_MARKETING_TERMS = [
     "代开", "发票", "办证", "兼职", "刷单", "博彩", "担保", "盘口", "上分", "下分", "跑分",
-    "出u", "收u", "usdt", "泰达币", "高价", "返佣", "推广", "引流", "开户", "接单",
+    "u币", "出u", "收u", "卖u", "买u", "usdt", "泰达币", "虚拟币", "数字货币", "高价", "返佣", "推广", "引流", "开户", "接单",
     "私聊", "加我", "联系", "客服", "代理", "项目", "赚钱", "变现", "裸聊", "约炮"
 ]
 
 CONFUSABLE_TRANS = str.maketrans({
     '0': 'o', '1': 'l', '3': 'e', '4': 'a', '5': 's', '7': 't', '@': 'a', '$': 's', '|': 'l'
 })
+
+URL_RE = re.compile(r'https?://|t\.me/|telegram\.me/|www\.|\.com\b|\.net\b|\.org\b')
+MENTION_RE = re.compile(r'@[a-zA-Z0-9_]{5,}')
+PHONE_RE = re.compile(r'\+?\d[\d\s\-()]{7,}\d')
+CONTACT_RE = re.compile(r'微信|威信|薇信|vx|v信|qq|飞机|电报|tg|telegram')
+CRYPTO_RE = re.compile(r'usdt|trc20|erc20|充值|提现|收款|付款|钱包|交易所')
+REPEAT_CHAR_RE = re.compile(r'(.)\1{5,}')
+REPEATED_PUNCT_RE = re.compile(r'[!！?？]{2,}')
 
 DEFAULT_REMOTE_SPAM_URL = "https://raw.githubusercontent.com/sykin7/my-telegram-spam-rules/refs/heads/main/spam.txt"
 REMOTE_SPAM_URL = os.environ.get('REMOTE_SPAM_URL') or DEFAULT_REMOTE_SPAM_URL
@@ -703,7 +712,15 @@ def normalize_lang(lang):
 
 def build_spam_regex(keywords):
     sorted_kws = sorted(list(keywords), key=len, reverse=True)[:MAX_SPAM_KEYWORDS]
-    escaped_kws = [re.escape(normalize_text(k)) for k in sorted_kws if k.strip()]
+    normalized = set()
+    for k in sorted_kws:
+        if not k.strip():
+            continue
+        normalized.add(normalize_text(k))
+        compact = normalize_for_spam(k)
+        if compact:
+            normalized.add(compact)
+    escaped_kws = [re.escape(k) for k in sorted(normalized, key=len, reverse=True)]
     if not escaped_kws: return None
     pattern = r'(?:' + '|'.join(escaped_kws) + r')'
     try: return re.compile(pattern, re.IGNORECASE)
@@ -841,10 +858,11 @@ def is_spam_text(text):
     if len(text) > 5000: text = text[:5000]
     text_nospace = re.sub(r'\s+', '', text)
     text_cleaned = re.sub(r'[^\w]', '', text)
+    text_compact = normalize_for_spam(text)
     with _spam_lock:
         if spam_regex_pattern:
             try:
-                if (spam_regex_pattern.search(text) or spam_regex_pattern.search(text_nospace) or spam_regex_pattern.search(text_cleaned)): return True
+                if (spam_regex_pattern.search(text) or spam_regex_pattern.search(text_nospace) or spam_regex_pattern.search(text_cleaned) or spam_regex_pattern.search(text_compact)): return True
             except: return False
     return False
 
@@ -853,33 +871,57 @@ def spam_risk_score(text):
     raw = normalize_text(text)
     compact = normalize_for_spam(raw)
     score = 0
-    if re.search(r'https?://|t\.me/|telegram\.me/|www\.|\.com\b|\.net\b|\.org\b', raw): score += 3
-    if re.search(r'@[a-zA-Z0-9_]{5,}', raw): score += 2
-    if re.search(r'\+?\d[\d\s\-()]{7,}\d', raw): score += 2
-    if re.search(r'(微信|威信|薇信|vx|v信|qq|飞机|电报|tg|telegram)', raw): score += 2
-    if re.search(r'(usdt|trc20|erc20|充值|提现|收款|付款|钱包|交易所)', compact): score += 3
+    if URL_RE.search(raw): score += 3
+    if MENTION_RE.search(raw): score += 2
+    if PHONE_RE.search(raw): score += 2
+    if CONTACT_RE.search(raw): score += 2
+    if CRYPTO_RE.search(compact): score += 3
     term_hits = sum(1 for term in SPAM_MARKETING_TERMS if normalize_for_spam(term) in compact)
     score += min(term_hits * 2, 8)
     if len(compact) > 80 and term_hits >= 2: score += 2
-    if re.search(r'(.)\1{5,}', compact): score += 1
-    if len(re.findall(r'[!！?？]{2,}', raw)) >= 2: score += 1
+    if REPEAT_CHAR_RE.search(compact): score += 1
+    if len(REPEATED_PUNCT_RE.findall(raw)) >= 2: score += 1
     return score
 
 def check_deep_spam(message):
     content = getattr(message, 'text', None) or getattr(message, 'caption', None) or ""
     if is_spam_text(content): return True
-    if spam_risk_score(content) >= 6: return True
+    try:
+        if spam_risk_score(content) >= 6: return True
+    except Exception as e:
+        logging.warning(f"Spam risk scoring failed: {e}")
     user = message.from_user
     if is_spam_text(getattr(user, 'first_name', None)): return True
     if is_spam_text(getattr(user, 'last_name', None)): return True
     if is_spam_text(getattr(user, 'username', None)): return True
     profile_text = " ".join([str(getattr(user, 'first_name', '') or ''), str(getattr(user, 'last_name', '') or ''), str(getattr(user, 'username', '') or '')])
-    if spam_risk_score(profile_text) >= 5: return True
+    try:
+        if spam_risk_score(profile_text) >= 5: return True
+    except Exception as e:
+        logging.warning(f"Profile spam risk scoring failed: {e}")
     document = getattr(message, 'document', None)
     if document and hasattr(document, 'file_name'):
         if is_spam_text(document.file_name): return True
-        if spam_risk_score(document.file_name) >= 5: return True
+        try:
+            if spam_risk_score(document.file_name) >= 5: return True
+        except Exception as e:
+            logging.warning(f"Document spam risk scoring failed: {e}")
     return False
+
+def explain_spam_text(text):
+    raw = normalize_text(text or '')
+    compact = normalize_for_spam(raw)
+    keyword_hit = is_spam_text(raw)
+    score = spam_risk_score(raw)
+    blocked = keyword_hit or score >= 6
+    reasons = []
+    if keyword_hit:
+        reasons.append('关键词命中')
+    if score >= 6:
+        reasons.append(f'风险分 {score} >= 6')
+    if not reasons:
+        reasons.append(f'未命中，风险分 {score}')
+    return blocked, score, compact, '；'.join(reasons)
 
 def inject_noise(text):
     res = ""
@@ -964,7 +1006,7 @@ def get_help_message(is_admin, user_id):
     lang = normalize_lang(stat['lang'])
     help_msg = "📚 <b>机器人指令帮助</b>\n\n👉 <b>用户指令</b>\n• <code>/start</code> / <code>/help</code>: 打开菜单\n"
     if is_admin:
-        help_msg += "\n👑 <b>管理员指令 (Admin)</b>\n• 回复用户转发消息 <code>/ban</code>: 封禁 30 天\n• 回复用户转发消息 <code>/unban</code>: 解封\n• 回复用户转发消息 <code>/awl</code>: 加白名单\n• 回复用户转发消息 <code>/abl</code>: 加黑名单\n• <code>/gb &lt;内容&gt;</code>: 广播\n• <code>/awl &lt;ID&gt;</code>: ID 加白\n• <code>/dwl &lt;ID&gt;</code>: ID 移出白名单\n• <code>/abl &lt;ID&gt;</code>: ID 加黑\n• <code>/dbl &lt;ID&gt;</code>: ID 移出黑名单\n• <code>/vlist wl</code>: 看白名单\n• <code>/vlist bl</code>: 看黑名单\n• <code>/id</code>: 查看当前 Telegram 数字 ID"
+        help_msg += "\n👑 <b>管理员指令 (Admin)</b>\n• 回复用户转发消息 <code>/ban</code>: 封禁 30 天\n• 回复用户转发消息 <code>/unban</code>: 解封\n• 回复用户转发消息 <code>/awl</code>: 加白名单\n• 回复用户转发消息 <code>/abl</code>: 加黑名单\n• <code>/gb &lt;内容&gt;</code>: 广播\n• <code>/awl &lt;ID&gt;</code>: ID 加白\n• <code>/dwl &lt;ID&gt;</code>: ID 移出白名单\n• <code>/abl &lt;ID&gt;</code>: ID 加黑\n• <code>/dbl &lt;ID&gt;</code>: ID 移出黑名单\n• <code>/vlist wl</code>: 看白名单\n• <code>/vlist bl</code>: 看黑名单\n• <code>/spamtest &lt;内容&gt;</code>: 测试广告规则\n• <code>/id</code>: 查看当前 Telegram 数字 ID"
     return help_msg
 
 def admin_reply_target(message):
@@ -976,6 +1018,12 @@ def admin_usage(message, text):
     m = safe_reply_to(message, text, parse_mode='HTML')
     if m:
         deleter.schedule(ADMIN_ID, m.message_id, 15)
+
+def format_spam_sample(text, limit=120):
+    text = normalize_text(text or '')
+    if len(text) > limit:
+        text = text[:limit] + '...'
+    return html.escape(text)
 
 def broadcast_thread(text):
     with _db_lock:
@@ -998,6 +1046,24 @@ def broadcast_thread(text):
 def handle_id_command(message):
     if message.chat.type != 'private': return
     safe_reply_to(message, f"🆔 你的 Telegram 数字 ID 是：<code>{message.from_user.id}</code>", parse_mode='HTML')
+
+@bot.message_handler(commands=['spamtest'])
+def handle_spamtest_command(message):
+    if message.from_user.id != ADMIN_ID: return
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        admin_usage(message, "用法：<code>/spamtest 要测试的内容</code>")
+        return
+    sample = parts[1].strip()
+    blocked, score, compact, reason = explain_spam_text(sample)
+    status = "会拦截" if blocked else "不会拦截"
+    reply = (
+        f"🧪 <b>广告规则测试</b>\n"
+        f"结果：<b>{status}</b>\n"
+        f"原因：{html.escape(reason)}\n"
+        f"风险分：<code>{score}</code>"
+    )
+    safe_reply_to(message, reply, parse_mode='HTML')
 
 @bot.message_handler(commands=['gb'])
 def handle_broadcast_command(message):
@@ -1145,7 +1211,9 @@ def handle_edited_message(message):
             safe_send(bot.delete_message, message.chat.id, message.message_id)
             m = safe_send(bot.send_message, user_id, get_text('spam_edit_ban', user_id), parse_mode='HTML')
             deleter.schedule(user_id, m.message_id, 30)
-            alert_msg = f"⚠️ <b>检测到违规编辑</b>\n用户: {user_id}\n操作: 已封禁并删除消息。"
+            content = getattr(message, 'text', None) or getattr(message, 'caption', None) or ''
+            blocked, score, compact, reason = explain_spam_text(content)
+            alert_msg = f"⚠️ <b>已拦截违规编辑</b>\n用户: <code>{user_id}</code>\n原因: {html.escape(reason)}\n风险分: <code>{score}</code>\n操作: 已封禁并删除消息。"
             safe_send(bot.send_message, ADMIN_ID, alert_msg, parse_mode='HTML')
         except Exception as e: logging.warning(f"Edited spam handling failed for {user_id}: {e}")
 
@@ -1178,6 +1246,13 @@ def handle_incoming(message):
             m = safe_send(bot.send_message, user_id, get_text('spam_ban', user_id))
             deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
             deleter.schedule(user_id, message.message_id, MSG_AUTO_DELETE_DELAY)
+            content = getattr(message, 'text', None) or getattr(message, 'caption', None) or ''
+            blocked, score, compact, reason = explain_spam_text(content)
+            try:
+                alert_msg = f"🚫 <b>已拦截广告</b>\n用户: <code>{user_id}</code>\n原因: {html.escape(reason)}\n风险分: <code>{score}</code>\n操作: 已封禁，广告内容不会转发给管理员。"
+                safe_send(bot.send_message, ADMIN_ID, alert_msg, parse_mode='HTML')
+            except Exception as e:
+                logging.warning(f"Spam block notice failed for {user_id}: {e}")
             return
         
         if message.content_type == 'text' and CAPTCHA_TEXT_FALLBACK:
