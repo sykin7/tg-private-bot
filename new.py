@@ -56,6 +56,13 @@ SPAM_MARKETING_TERMS = [
     "私聊", "加我", "联系", "客服", "代理", "项目", "赚钱", "变现", "裸聊", "约炮"
 ]
 
+HARD_BLOCK_TERMS = [
+    "u币", "u 币", "u幣", "u 幣", "U币", "U 币", "U幣", "U 幣",
+    "出u", "出U", "收u", "收U", "卖u", "卖U", "買u", "買U", "买u", "买U", "换u", "换U", "換u", "換U",
+    "高价收u", "高价收U", "高價收u", "高價收U", "低价出u", "低价出U", "低價出u", "低價出U",
+    "usdt", "泰达币", "泰達幣", "虚拟币", "虛擬幣", "数字货币", "數字貨幣"
+]
+
 CONFUSABLE_TRANS = str.maketrans({
     '0': 'o', '1': 'l', '3': 'e', '4': 'a', '5': 's', '7': 't', '@': 'a', '$': 's', '|': 'l'
 })
@@ -707,6 +714,12 @@ def normalize_for_spam(s):
     text = normalize_text(s).translate(CONFUSABLE_TRANS)
     return re.sub(r'[\s\u200b\u200c\u200d\ufe0f\W_]+', '', text)
 
+def has_hard_block_term(text):
+    compact = normalize_for_spam(text)
+    if not compact:
+        return False
+    return any(normalize_for_spam(term) in compact for term in HARD_BLOCK_TERMS)
+
 def normalize_lang(lang):
     return lang if lang in ('zh', 'en') else 'zh'
 
@@ -870,6 +883,7 @@ def is_spam_text(text):
     text_nospace = re.sub(r'\s+', '', text)
     text_cleaned = re.sub(r'[^\w]', '', text)
     text_compact = normalize_for_spam(text)
+    if has_hard_block_term(text): return True
     if spam_regex_pattern is None:
         load_fallback_spam_rules()
     with _spam_lock:
@@ -935,6 +949,20 @@ def explain_spam_text(text):
     if not reasons:
         reasons.append(f'未命中，风险分 {score}')
     return blocked, score, compact, '；'.join(reasons)
+
+def block_spam_message(message, user_id, delete_delay=MSG_AUTO_DELETE_DELAY):
+    db_ban_user(user_id, MAX_BAN_DURATION)
+    notice = safe_send(bot.send_message, user_id, get_text('spam_ban', user_id))
+    if notice:
+        deleter.schedule(user_id, notice.message_id, MSG_AUTO_DELETE_DELAY)
+    deleter.schedule(user_id, message.message_id, delete_delay)
+    content = getattr(message, 'text', None) or getattr(message, 'caption', None) or ''
+    blocked, score, compact, reason = explain_spam_text(content)
+    try:
+        alert_msg = f"🚫 <b>已拦截广告</b>\n用户: <code>{user_id}</code>\n原因: {html.escape(reason)}\n风险分: <code>{score}</code>\n操作: 已封禁，广告内容不会转发给管理员。"
+        safe_send(bot.send_message, ADMIN_ID, alert_msg, parse_mode='HTML')
+    except Exception as e:
+        logging.warning(f"Spam block notice failed for {user_id}: {e}")
 
 def inject_noise(text):
     res = ""
@@ -1255,17 +1283,7 @@ def handle_incoming(message):
             return
 
         if check_deep_spam(message):
-            db_ban_user(user_id, MAX_BAN_DURATION)
-            m = safe_send(bot.send_message, user_id, get_text('spam_ban', user_id))
-            deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
-            deleter.schedule(user_id, message.message_id, MSG_AUTO_DELETE_DELAY)
-            content = getattr(message, 'text', None) or getattr(message, 'caption', None) or ''
-            blocked, score, compact, reason = explain_spam_text(content)
-            try:
-                alert_msg = f"🚫 <b>已拦截广告</b>\n用户: <code>{user_id}</code>\n原因: {html.escape(reason)}\n风险分: <code>{score}</code>\n操作: 已封禁，广告内容不会转发给管理员。"
-                safe_send(bot.send_message, ADMIN_ID, alert_msg, parse_mode='HTML')
-            except Exception as e:
-                logging.warning(f"Spam block notice failed for {user_id}: {e}")
+            block_spam_message(message, user_id)
             return
         
         if message.content_type == 'text' and CAPTCHA_TEXT_FALLBACK:
@@ -1305,6 +1323,10 @@ def handle_incoming(message):
             deleter.schedule(user_id, message.message_id, MSG_AUTO_DELETE_DELAY)
             return
 
+    if not is_whitelisted and check_deep_spam(message):
+        block_spam_message(message, user_id)
+        return
+
     file_size = 0
     if message.content_type == 'photo': file_size = message.photo[-1].file_size
     elif message.content_type == 'video': file_size = message.video.file_size
@@ -1334,6 +1356,10 @@ def handle_incoming(message):
     
     def send_wrapper():
         try:
+            if not is_whitelisted and check_deep_spam(message):
+                block_spam_message(message, user_id)
+                return
+
             sent = None
             if message.content_type == 'text':
                 for part in limit_chunks(split_html_text_with_suffix(message.text, user_info)):
