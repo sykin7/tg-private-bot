@@ -1062,18 +1062,17 @@ def send_welcome_handler(message):
     user_status = get_cached_user_status(user_id)
     if user_status['bl']: return
     deleter.schedule(user_id, message.message_id, MSG_AUTO_DELETE_DELAY)
-    if check_flood(user_id):
+    if user_id != ADMIN_ID and check_flood(user_id):
         db_ban_user(user_id, FLOOD_PENALTY_TIME)
         return
-    if message.text == '/start':
-        if user_status.get('lang'):
-            if should_send_captcha_prompt(user_id): send_menu(user_id)
-        else: ask_language(user_id)
-    else:
-        if not should_send_captcha_prompt(user_id): return
+    if message.text == '/help':
         m = send_long_message(user_id, get_help_message(user_id==ADMIN_ID, user_id), parse_mode='HTML')
         deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
         send_menu(user_id)
+    elif message.text == '/start':
+        if user_status.get('lang'):
+            send_menu(user_id)
+        else: ask_language(user_id)
 
 @bot.edited_message_handler(func=lambda m: True)
 def handle_edited_message(message):
