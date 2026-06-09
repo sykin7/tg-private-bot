@@ -194,6 +194,7 @@ Ctrl + C
 /dbl 用户ID
 /vlist wl
 /vlist bl
+/spamtest 要测试的内容
 ```
 
 回复用户转发消息时发送：
@@ -209,13 +210,47 @@ Ctrl + C
 
 - `/ban`：封禁该用户 30 天。
 - `/unban`：解封该用户。
-- `/awl`：加入白名单。
+- `/awl`：加入白名单；白名单用户会跳过广告和刷屏检查。
 - `/abl`：加入黑名单。
 - `/gb`：广播给已记录用户。
 - `/vlist wl`：查看白名单。
 - `/vlist bl`：查看黑名单。
+- `/spamtest 内容`：测试广告规则是否命中，不会真的封人，回复里不会回显广告原文。例如 `/spamtest u币`、`/spamtest u 币`、`/spamtest 出U`。
 
-## 8. 日常维护
+## 8. 广告屏蔽排查
+
+这个机器人不是“通过验证后就不查广告”。普通用户私聊消息的处理顺序是：黑名单检查 -> 白名单判断 -> 刷屏检查 -> 广告检查 -> 验证码/已验证判断 -> 转发给管理员。
+
+所以，通过验证码的用户继续发广告，正常也会被广告规则拦截并封禁。真正会绕过广告检查的是白名单用户。
+
+广告命中后会直接封禁并停止转发，管理员只收到干净的拦截结果，不会再收到广告原文。如果你看到广告还能发到管理员这里，按这个顺序查：
+
+1. 看他是不是白名单：
+
+```text
+/vlist wl
+```
+
+2. 测试当前规则是否命中：
+
+```text
+/spamtest u币
+/spamtest u 币
+/spamtest 出U
+```
+
+3. 确认 VPS 已经拉到新镜像：
+
+```bash
+cd /opt/codexbot
+docker-compose pull
+docker-compose up -d
+docker-compose logs -f codexbot
+```
+
+日志里看到 `Bot Started.` 后，再用另一个 Telegram 账号给机器人发送测试内容。
+
+## 9. 日常维护
 
 进入目录：
 
@@ -262,7 +297,7 @@ docker-compose up -d
 docker-compose logs -f codexbot
 ```
 
-## 9. 备份和恢复
+## 10. 备份和恢复
 
 轻量版数据文件在：
 
@@ -288,7 +323,7 @@ cp -a backup/你的备份文件.db data/bot_core.db
 docker-compose up -d
 ```
 
-## 10. 安全确认
+## 11. 安全确认
 
 查看端口：
 
@@ -305,7 +340,7 @@ CodexBot 不应该出现类似：
 
 轻量版没有 PostgreSQL 和 Redis，也没有 `ports:`，所以默认不会暴露公网。
 
-## 11. 常见问题
+## 12. 常见问题
 
 ### docker: unknown command: docker compose
 
@@ -383,7 +418,7 @@ docker rm tg-bot
 docker-compose restart codexbot
 ```
 
-## 12. 进阶：什么时候才需要 PostgreSQL 和 Redis
+## 13. 进阶：什么时候才需要 PostgreSQL 和 Redis
 
 只有这些情况才建议使用三容器版：
 
