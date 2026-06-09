@@ -617,7 +617,7 @@ free -h
 
 本地代码改完后：
 
-1. 确认只维护 `new.py`，不要再恢复 `机器.py`。
+1. 确认只维护 `new.py`。
 2. 本地执行 `python -m py_compile new.py`。
 3. 推送到 GitHub 的 `codex` 分支。
 4. 等 GitHub Actions 构建 `ghcr.io/sykin7/codexbot:latest` 成功。
