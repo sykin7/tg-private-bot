@@ -360,7 +360,11 @@ def migrate_sqlite_to_postgres_once():
                 ('blacklist', ['user_id', 'added_at']),
             ]:
                 existing_cols = {row[1] for row in sqlite_conn.execute(f"PRAGMA table_info({table})").fetchall()}
+                if not existing_cols:
+                    continue
                 select_cols = [c for c in cols if c in existing_cols]
+                if not select_cols:
+                    continue
                 rows = sqlite_conn.execute(f"SELECT {', '.join(select_cols)} FROM {table}").fetchall()
                 if not rows: continue
                 placeholders = ', '.join(['?'] * len(cols))
