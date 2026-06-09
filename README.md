@@ -161,6 +161,7 @@ Rules Updated.
 /dbl 用户ID
 /vlist wl
 /vlist bl
+/spamtest 要测试的内容
 ```
 
 回复机器人转发来的用户消息时发送：
@@ -170,6 +171,48 @@ Rules Updated.
 /unban
 /awl
 /abl
+```
+
+常用说明：
+
+- `/ban`：封禁该用户 30 天。
+- `/unban`：解封该用户。
+- `/awl`：加入白名单；白名单用户会跳过广告和刷屏检查。
+- `/abl`：加入黑名单。
+- `/gb`：广播给已记录用户。
+- `/vlist wl`：查看白名单。
+- `/vlist bl`：查看黑名单。
+- `/spamtest 内容`：管理员测试广告规则是否命中，不会真的封人，回复里不会回显广告原文。例如 `/spamtest u币`、`/spamtest u 币`、`/spamtest 出U`。
+
+## 广告屏蔽排查
+
+普通用户私聊机器人时，处理顺序是：黑名单检查 -> 白名单判断 -> 刷屏检查 -> 广告检查 -> 验证码/已验证判断 -> 转发给管理员。
+
+也就是说，用户通过验证码以后继续发消息，仍然会经过广告屏蔽。真正会绕过广告检查的是白名单用户。
+
+广告命中后会直接封禁并停止转发，管理员只收到干净的拦截结果，不会再收到广告原文。如果你看到广告还能发到管理员这里，按这个顺序查：
+
+1. 看他是不是白名单：
+
+```text
+/vlist wl
+```
+
+2. 测试当前规则是否命中：
+
+```text
+/spamtest u币
+/spamtest u 币
+/spamtest 出U
+```
+
+3. 确认 VPS 已经拉到新镜像：
+
+```bash
+cd /opt/codexbot
+docker-compose pull
+docker-compose up -d
+docker-compose logs -f codexbot
 ```
 
 ## 日常维护
