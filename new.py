@@ -906,8 +906,8 @@ def send_menu(user_id, text=None):
         deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
     except Exception as e: logging.warning(f"Send menu failed for {user_id}: {e}")
 
-def ask_language(chat_id):
-    if not should_send_captcha_prompt(chat_id): return
+def ask_language(chat_id, force=False):
+    if not force and not should_send_captcha_prompt(chat_id): return
     markup = InlineKeyboardMarkup()
     markup.row(InlineKeyboardButton("🇨🇳 中文", callback_data="set_lang:zh"), InlineKeyboardButton("🇺🇸 English", callback_data="set_lang:en"))
     try:
@@ -964,8 +964,18 @@ def get_help_message(is_admin, user_id):
     lang = normalize_lang(stat['lang'])
     help_msg = "📚 <b>机器人指令帮助</b>\n\n👉 <b>用户指令</b>\n• <code>/start</code> / <code>/help</code>: 打开菜单\n"
     if is_admin:
-        help_msg += "\n👑 <b>管理员指令 (Admin)</b>\n• 回复消息 <code>/ban</code>: 封禁\n• 回复消息 <code>/unban</code>: 解封\n• 回复消息 <code>/awl</code>: 加白名单\n• 回复消息 <code>/abl</code>: 加黑名单\n• <code>/gb &lt;内容&gt;</code>: 广播\n• <code>/awl &lt;ID&gt;</code>: ID加白\n• <code>/vlist wl</code>: 看白名单"
+        help_msg += "\n👑 <b>管理员指令 (Admin)</b>\n• 回复用户转发消息 <code>/ban</code>: 封禁 30 天\n• 回复用户转发消息 <code>/unban</code>: 解封\n• 回复用户转发消息 <code>/awl</code>: 加白名单\n• 回复用户转发消息 <code>/abl</code>: 加黑名单\n• <code>/gb &lt;内容&gt;</code>: 广播\n• <code>/awl &lt;ID&gt;</code>: ID 加白\n• <code>/dwl &lt;ID&gt;</code>: ID 移出白名单\n• <code>/abl &lt;ID&gt;</code>: ID 加黑\n• <code>/dbl &lt;ID&gt;</code>: ID 移出黑名单\n• <code>/vlist wl</code>: 看白名单\n• <code>/vlist bl</code>: 看黑名单\n• <code>/id</code>: 查看当前 Telegram 数字 ID"
     return help_msg
+
+def admin_reply_target(message):
+    if not getattr(message, 'reply_to_message', None):
+        return None
+    return db_get_map(message.reply_to_message.message_id)
+
+def admin_usage(message, text):
+    m = safe_reply_to(message, text, parse_mode='HTML')
+    if m:
+        deleter.schedule(ADMIN_ID, m.message_id, 15)
 
 def broadcast_thread(text):
     with _db_lock:
@@ -984,32 +994,58 @@ def broadcast_thread(text):
     try: send_long_message(ADMIN_ID, f"📢 广播结束\n✅: {success_count}\n❌: {fail_count}")
     except Exception as e: logging.warning(f"Broadcast summary failed: {e}")
 
+@bot.message_handler(commands=['id'])
+def handle_id_command(message):
+    if message.chat.type != 'private': return
+    safe_reply_to(message, f"🆔 你的 Telegram 数字 ID 是：<code>{message.from_user.id}</code>", parse_mode='HTML')
+
 @bot.message_handler(commands=['gb'])
 def handle_broadcast_command(message):
     if message.from_user.id != ADMIN_ID: return
-    msg_text = message.text.replace('/gb', '').strip()
-    if not msg_text: return
+    parts = message.text.split(maxsplit=1)
+    msg_text = parts[1].strip() if len(parts) > 1 else ''
+    if not msg_text:
+        admin_usage(message, "用法：<code>/gb 要广播的内容</code>")
+        return
     safe_reply_to(message, "🚀 广播开始...")
     threading.Thread(target=broadcast_thread, args=(msg_text,), daemon=True).start()
 
 @bot.message_handler(commands=['awl', 'dwl', 'abl', 'dbl', 'vlist'])
 def handle_list_commands(message):
     if message.from_user.id != ADMIN_ID: return
-    cmd = message.text.split()[0].lower().replace('/', '')
+    cmd = message.text.split()[0].split('@', 1)[0].lower().replace('/', '')
     parts = message.text.split()
     if cmd in ['awl', 'dwl', 'abl', 'dbl']:
-        if len(parts) < 2: return
-        try: target_uid = int(parts[1].strip())
-        except: return
+        target_uid = None
+        if len(parts) >= 2:
+            try: target_uid = int(parts[1].strip())
+            except:
+                admin_usage(message, "ID 必须是纯数字，例如：<code>/awl 123456789</code>")
+                return
+        elif cmd in ['awl', 'abl']:
+            target_uid = admin_reply_target(message)
+        if not target_uid:
+            if cmd in ['awl', 'abl']:
+                admin_usage(message, f"用法：<code>/{cmd} 用户ID</code>，或回复用户转发消息发送 <code>/{cmd}</code>")
+            else:
+                admin_usage(message, f"用法：<code>/{cmd} 用户ID</code>")
+            return
         list_name = 'whitelist' if cmd.endswith('wl') else 'blacklist'
         if cmd.startswith('a'):
             if db_add_to_list(list_name, target_uid): safe_reply_to(message, f"✅ ID {target_uid} 已加入 {list_name}。")
+            else: safe_reply_to(message, f"ℹ️ ID {target_uid} 已经在 {list_name} 中。")
         else:
             if db_remove_from_list(list_name, target_uid): safe_reply_to(message, f"✅ ID {target_uid} 已移出 {list_name}。")
+            else: safe_reply_to(message, f"ℹ️ ID {target_uid} 不在 {list_name} 中。")
     elif cmd == 'vlist':
-        list_name = 'whitelist' if (len(parts) > 1 and parts[1] == 'wl') else 'blacklist'
+        list_arg = parts[1].lower() if len(parts) > 1 else ''
+        if list_arg not in ['wl', 'bl']:
+            admin_usage(message, "用法：<code>/vlist wl</code> 查看白名单，<code>/vlist bl</code> 查看黑名单")
+            return
+        list_name = 'whitelist' if list_arg == 'wl' else 'blacklist'
         data = db_get_list(list_name)
-        msg = f"📋 {list_name} ({len(data)}):\n" + "\n".join([f"• {u[0]}" for u in data[:50]])
+        rows = "\n".join([f"• {u[0]}" for u in data[:50]]) or "空"
+        msg = f"📋 {list_name} ({len(data)}):\n" + rows
         safe_reply_to(message, msg)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('set_lang:'))
@@ -1065,14 +1101,34 @@ def send_welcome_handler(message):
     if user_id != ADMIN_ID and check_flood(user_id):
         db_ban_user(user_id, FLOOD_PENALTY_TIME)
         return
-    if message.text == '/help':
+    cmd = message.text.split()[0].split('@', 1)[0].lower()
+    if cmd == '/help':
         m = send_long_message(user_id, get_help_message(user_id==ADMIN_ID, user_id), parse_mode='HTML')
         deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
         send_menu(user_id)
-    elif message.text == '/start':
+    elif cmd == '/start':
         if user_status.get('lang'):
             send_menu(user_id)
         else: ask_language(user_id)
+
+@bot.message_handler(func=lambda m: m.chat.type == 'private' and m.from_user.id == ADMIN_ID and not getattr(m, 'reply_to_message', None), content_types=['text'])
+def handle_admin_menu(message):
+    user_id = message.from_user.id
+    db_touch_user(user_id)
+    user_status = get_cached_user_status(user_id)
+    lang = normalize_lang(user_status.get('lang'))
+    text = message.text or ''
+    menu_contact_values = {STRINGS['menu_contact']['zh'], STRINGS['menu_contact']['en']}
+    menu_help_values = {STRINGS['menu_help']['zh'], STRINGS['menu_help']['en']}
+    menu_lang_values = {STRINGS['menu_lang']['zh'], STRINGS['menu_lang']['en']}
+    if text in menu_lang_values:
+        ask_language(user_id, force=True)
+    elif text in menu_help_values:
+        m = send_long_message(user_id, get_help_message(True, user_id), parse_mode='HTML')
+        deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
+        send_menu(user_id)
+    elif text in menu_contact_values:
+        send_menu(user_id, WELCOME_ZH if lang == 'zh' else WELCOME_EN)
 
 @bot.edited_message_handler(func=lambda m: True)
 def handle_edited_message(message):
@@ -1151,7 +1207,7 @@ def handle_incoming(message):
     lang = normalize_lang(user_status.get('lang'))
     if message.content_type == 'text':
         if message.text in [STRINGS['menu_contact'][lang], STRINGS['menu_help'][lang], STRINGS['menu_lang'][lang]]:
-            if message.text == STRINGS['menu_lang'][lang]: ask_language(user_id)
+            if message.text == STRINGS['menu_lang'][lang]: ask_language(user_id, force=True)
             elif message.text == STRINGS['menu_help'][lang]: 
                 m = safe_send(bot.send_message, user_id, "💡 FAQ / 常见问题:\n1. 消息直接发送。\n2. 违规自动封禁。")
                 deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
