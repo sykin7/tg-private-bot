@@ -6,6 +6,7 @@ import logging
 import time
 import os
 import re
+import base64
 import requests
 import threading
 import queue
@@ -14,7 +15,7 @@ import unicodedata
 import html
 import random
 import secrets
-from collections import deque
+from collections import deque, OrderedDict
 
 try:
     import redis
@@ -27,6 +28,23 @@ try:
 except ImportError:
     psycopg = None
     tuple_row = None
+
+def env_bool(name, default=False):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.lower() in ('1', 'true', 'yes', 'on')
+
+def env_int(name, default, min_value=None, max_value=None):
+    try:
+        value = int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    if min_value is not None:
+        value = max(min_value, value)
+    if max_value is not None:
+        value = min(max_value, value)
+    return value
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_ID_STR = os.environ.get('ADMIN_ID') or os.environ.get('OWNER_ID')
@@ -83,6 +101,12 @@ REDIS_URL = os.environ.get('REDIS_URL')
 REDIS_ENABLED = os.environ.get('REDIS_ENABLED', 'true').lower() not in ('0', 'false', 'no', 'off')
 MIGRATE_SQLITE_TO_POSTGRES = os.environ.get('MIGRATE_SQLITE_TO_POSTGRES', 'false').lower() in ('1', 'true', 'yes', 'on')
 CAPTCHA_TEXT_FALLBACK = os.environ.get('CAPTCHA_TEXT_FALLBACK', 'false').lower() in ('1', 'true', 'yes', 'on')
+IMAGE_OCR_ENABLED = env_bool('IMAGE_OCR_ENABLED', False)
+IMAGE_OCR_PROVIDER = os.environ.get('IMAGE_OCR_PROVIDER', 'ocrspace').lower()
+IMAGE_OCR_API_URL = os.environ.get('IMAGE_OCR_API_URL') or ('https://api.openai.com/v1/chat/completions' if IMAGE_OCR_PROVIDER in ('openai', 'openai_compatible', 'ai') else 'https://api.ocr.space/parse/image')
+IMAGE_OCR_API_KEY = os.environ.get('IMAGE_OCR_API_KEY') or os.environ.get('OCR_SPACE_API_KEY')
+IMAGE_OCR_MODEL = os.environ.get('IMAGE_OCR_MODEL', 'gpt-4o-mini')
+IMAGE_OCR_PROMPT = os.environ.get('IMAGE_OCR_PROMPT') or 'Extract all visible text from this image, especially ads, QR codes, contact info, usernames, URLs, payment or crypto terms. Return only concise text.'
 
 FLOOD_WINDOW = 10
 MAX_MSGS_PER_WINDOW = 6
@@ -111,6 +135,15 @@ DB_MAX_ROWS = 10000
 DB_SIZE_LIMIT_MB = 10
 DB_RETENTION_DAYS = 7
 MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
+IMAGE_OCR_MAX_BYTES = env_int('IMAGE_OCR_MAX_BYTES', 20 * 1024 * 1024, 64 * 1024, 20 * 1024 * 1024)
+IMAGE_AI_OCR_MAX_BYTES = env_int('IMAGE_AI_OCR_MAX_BYTES', 5 * 1024 * 1024, 64 * 1024, IMAGE_OCR_MAX_BYTES)
+IMAGE_OCR_TIMEOUT = env_int('IMAGE_OCR_TIMEOUT', 5, 2, 20)
+IMAGE_OCR_MIN_INTERVAL = env_int('IMAGE_OCR_MIN_INTERVAL', 2, 0, 60)
+IMAGE_OCR_CACHE_TTL = env_int('IMAGE_OCR_CACHE_TTL', 86400, 60, 604800)
+IMAGE_OCR_CACHE_MAX_BYTES = env_int('IMAGE_OCR_CACHE_MAX_BYTES', 300 * 1024 * 1024, 1024 * 1024, 300 * 1024 * 1024)
+IMAGE_OCR_MAX_TEXT = env_int('IMAGE_OCR_MAX_TEXT', 2000, 200, 10000)
+IMAGE_COOLDOWN_SECONDS = env_int('IMAGE_COOLDOWN_SECONDS', 30, 5, 3600)
+IMAGE_NOTICE_COOLDOWN = env_int('IMAGE_NOTICE_COOLDOWN', 30, 5, 3600)
 TELEGRAM_TEXT_LIMIT = 4096
 TELEGRAM_CAPTION_LIMIT = 1024
 DELETE_QUEUE_MAXSIZE = 5000
@@ -137,6 +170,10 @@ media_group_cache = {}
 user_status_cache = {}
 auto_reply_cache = {}
 captcha_prompt_state = {}
+photo_cooldown_cache = {}
+photo_notice_cache = {}
+admin_ocr_alert_cache = {}
+image_ocr_cache = OrderedDict()
 spam_regex_pattern = None
 SPAM_RULE_SOURCE = 'none'
 SPAM_RULE_KEYWORD_COUNT = 0
@@ -155,6 +192,7 @@ _last_outbound_token_update = time.time()
 _delete_token_bucket = DELETE_MESSAGE_LIMIT
 _last_delete_token_update = time.time()
 _last_db_cleanup = 0
+_last_image_ocr_at = 0
 
 def get_redis_client():
     global _redis_client
@@ -788,6 +826,219 @@ def safe_requests_get(url):
         logging.warning(f"Remote rules download failed: {e}")
         return None
 
+def safe_requests_post(url, **kwargs):
+    try:
+        r = requests.post(url, timeout=IMAGE_OCR_TIMEOUT, **kwargs)
+        if r.status_code != 200:
+            logging.warning(f"Image OCR request failed with status {r.status_code}.")
+            return None, f'http_{r.status_code}'
+        return r, None
+    except requests.Timeout as e:
+        logging.warning(f"Image OCR request timed out: {e}")
+        return None, 'timeout'
+    except requests.RequestException as e:
+        logging.warning(f"Image OCR request failed: {e}")
+        return None, 'request_exception'
+    except Exception as e:
+        logging.warning(f"Image OCR request failed: {e}")
+        return None, 'request_failed'
+
+_image_ocr_lock = threading.Lock()
+
+def is_ai_ocr_provider():
+    return IMAGE_OCR_PROVIDER in ('openai', 'openai_compatible', 'ai')
+
+def validate_ocr_config():
+    if not IMAGE_OCR_ENABLED:
+        return True, None
+    if IMAGE_OCR_PROVIDER not in ('ocrspace', 'openai', 'openai_compatible', 'ai'):
+        return False, 'unsupported_provider'
+    if not IMAGE_OCR_API_KEY:
+        return False, 'missing_api_key'
+    if not IMAGE_OCR_API_URL:
+        return False, 'missing_api_url'
+    if is_ai_ocr_provider() and not IMAGE_OCR_MODEL:
+        return False, 'missing_model'
+    return True, None
+
+def image_ocr_cache_get(cache_key):
+    now = time.time()
+    with _cache_lock:
+        item = image_ocr_cache.get(cache_key)
+        if item and now - item.get('ts', 0) <= IMAGE_OCR_CACHE_TTL:
+            image_ocr_cache.move_to_end(cache_key)
+            return item.get('text', '')
+    return None
+
+def trim_image_ocr_cache_locked():
+    total = 0
+    for item in image_ocr_cache.values():
+        total += item.get('bytes', 0)
+    while image_ocr_cache and total > IMAGE_OCR_CACHE_MAX_BYTES:
+        _, item = image_ocr_cache.popitem(last=False)
+        total -= item.get('bytes', 0)
+
+def image_ocr_cache_set(cache_key, text):
+    text = (text or '')[:IMAGE_OCR_MAX_TEXT]
+    with _cache_lock:
+        image_ocr_cache[cache_key] = {'text': text, 'ts': time.time(), 'bytes': max(256, len(text.encode('utf-8')))}
+        image_ocr_cache.move_to_end(cache_key)
+        trim_image_ocr_cache_locked()
+
+def run_ocrspace(image_bytes):
+    data = {
+        'apikey': IMAGE_OCR_API_KEY,
+        'language': os.environ.get('IMAGE_OCR_LANGUAGE', 'chs'),
+        'isOverlayRequired': 'false',
+        'scale': 'true',
+        'OCREngine': os.environ.get('IMAGE_OCR_ENGINE', '2')
+    }
+    files = {'file': ('telegram-photo.jpg', image_bytes, 'image/jpeg')}
+    response, error = safe_requests_post(IMAGE_OCR_API_URL, data=data, files=files)
+    if error:
+        return None, f'ocrspace_{error}'
+    try:
+        payload = response.json()
+        if payload.get('IsErroredOnProcessing'):
+            logging.warning(f"Image OCR processing error: {payload.get('ErrorMessage')}")
+            return None, 'ocrspace_processing_error'
+        parts = []
+        for item in payload.get('ParsedResults') or []:
+            text = item.get('ParsedText') or ''
+            if text.strip():
+                parts.append(text.strip())
+        return '\n'.join(parts)[:IMAGE_OCR_MAX_TEXT], None
+    except Exception as e:
+        logging.warning(f"Image OCR parse failed: {e}")
+        return None, 'ocrspace_parse_failed'
+
+def run_openai_vision_ocr(image_bytes):
+    if len(image_bytes) > IMAGE_AI_OCR_MAX_BYTES:
+        return None, 'ai_image_too_large'
+    image_b64 = base64.b64encode(image_bytes).decode('ascii')
+    headers = {
+        'Authorization': f'Bearer {IMAGE_OCR_API_KEY}',
+        'Content-Type': 'application/json'
+    }
+    payload = {
+        'model': IMAGE_OCR_MODEL,
+        'messages': [{
+            'role': 'user',
+            'content': [
+                {'type': 'text', 'text': IMAGE_OCR_PROMPT},
+                {'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{image_b64}'}}
+            ]
+        }],
+        'temperature': 0,
+        'max_tokens': max(256, min(IMAGE_OCR_MAX_TEXT, 4096))
+    }
+    response, error = safe_requests_post(IMAGE_OCR_API_URL, headers=headers, json=payload)
+    if error:
+        return None, f'ai_{error}'
+    try:
+        data = response.json()
+        if data.get('error'):
+            logging.warning(f"AI OCR error: {data.get('error')}")
+            return None, 'ai_api_error'
+        choices = data.get('choices') or []
+        if not choices:
+            return None, 'ai_empty_choices'
+        msg = choices[0].get('message') or {}
+        content = msg.get('content') or ''
+        if isinstance(content, list):
+            content = '\n'.join([str(x.get('text', '')) for x in content if isinstance(x, dict)])
+        return str(content).strip()[:IMAGE_OCR_MAX_TEXT], None
+    except Exception as e:
+        logging.warning(f"AI OCR parse failed: {e}")
+        return None, 'ai_parse_failed'
+
+def ocr_photo_text(message, allow_request=True):
+    global _last_image_ocr_at
+    if not IMAGE_OCR_ENABLED or getattr(message, 'content_type', None) != 'photo':
+        return None, 'ocr_disabled'
+    photo = message.photo[-1] if getattr(message, 'photo', None) else None
+    if not photo:
+        return None, 'no_photo'
+    if getattr(photo, 'file_size', 0) and photo.file_size > IMAGE_OCR_MAX_BYTES:
+        return None, 'image_too_large'
+    cache_key = getattr(photo, 'file_unique_id', None) or getattr(photo, 'file_id', None)
+    if not cache_key:
+        return None, 'no_photo_cache_key'
+    cached = image_ocr_cache_get(cache_key)
+    if cached is not None:
+        return cached, None
+    if not allow_request:
+        return None, 'not_cached'
+    _image_ocr_lock.acquire()
+    try:
+        now = time.time()
+        if IMAGE_OCR_MIN_INTERVAL and now - _last_image_ocr_at < IMAGE_OCR_MIN_INTERVAL:
+            time.sleep(IMAGE_OCR_MIN_INTERVAL - (now - _last_image_ocr_at))
+        _last_image_ocr_at = time.time()
+        try:
+            tg_file = safe_send(bot.get_file, photo.file_id)
+            if getattr(tg_file, 'file_size', 0) and tg_file.file_size > IMAGE_OCR_MAX_BYTES:
+                return None, 'image_too_large'
+            image_bytes = safe_send(bot.download_file, tg_file.file_path)
+        except Exception as e:
+            logging.warning(f"Telegram photo download for OCR failed: {e}")
+            return None, 'telegram_download_failed'
+        if not image_bytes or len(image_bytes) > IMAGE_OCR_MAX_BYTES:
+            return None, 'image_too_large'
+        if IMAGE_OCR_PROVIDER == 'ocrspace':
+            text, error = run_ocrspace(image_bytes)
+        elif is_ai_ocr_provider():
+            text, error = run_openai_vision_ocr(image_bytes)
+        else:
+            logging.warning(f"Unsupported IMAGE_OCR_PROVIDER: {IMAGE_OCR_PROVIDER}")
+            return None, 'unsupported_provider'
+        if error:
+            return None, error
+        image_ocr_cache_set(cache_key, text)
+        return text, None
+    finally:
+        _image_ocr_lock.release()
+
+def check_photo_cooldown(user_id):
+    now = time.time()
+    key = f'bot:photo:cooldown:{user_id}'
+    added = redis_set_once(key, int(now), IMAGE_COOLDOWN_SECONDS)
+    if added is not None:
+        return added
+    with _cache_lock:
+        last_at = photo_cooldown_cache.get(user_id, 0)
+        if now - last_at < IMAGE_COOLDOWN_SECONDS:
+            return False
+        photo_cooldown_cache[user_id] = now
+        return True
+
+def should_send_photo_notice(user_id, reason):
+    now = time.time()
+    key = f'{user_id}:{reason}'
+    with _cache_lock:
+        last_at = photo_notice_cache.get(key, 0)
+        if now - last_at < IMAGE_NOTICE_COOLDOWN:
+            return False
+        photo_notice_cache[key] = now
+        return True
+
+def should_send_admin_ocr_alert(reason):
+    now = time.time()
+    with _cache_lock:
+        last_at = admin_ocr_alert_cache.get(reason, 0)
+        if now - last_at < IMAGE_NOTICE_COOLDOWN:
+            return False
+        admin_ocr_alert_cache[reason] = now
+        return True
+
+def notify_admin_ocr_issue(user_id, reason):
+    if not should_send_admin_ocr_alert(reason):
+        return
+    try:
+        safe_send(bot.send_message, ADMIN_ID, f"Image OCR failed\nUser: <code>{user_id}</code>\nReason: <code>{html.escape(reason)}</code>", parse_mode='HTML')
+    except Exception as e:
+        logging.warning(f"Admin OCR issue notice failed: {e}")
+
 def normalize_text(s):
     if not s: return ''
     return unicodedata.normalize('NFKC', s).lower().strip()
@@ -914,6 +1165,15 @@ def cleanup_dict():
             for k in to_del_cache: del user_status_cache[k]
             to_del_auto = [uid for uid, v in auto_reply_cache.items() if now - v.get('ts', now) > AUTO_REPLY_COOLDOWN * 4]
             for uid in to_del_auto: del auto_reply_cache[uid]
+            to_del_photo = [uid for uid, ts in photo_cooldown_cache.items() if now - ts > IMAGE_COOLDOWN_SECONDS * 4]
+            for uid in to_del_photo: del photo_cooldown_cache[uid]
+            to_del_photo_notice = [k for k, ts in photo_notice_cache.items() if now - ts > IMAGE_NOTICE_COOLDOWN * 4]
+            for k in to_del_photo_notice: del photo_notice_cache[k]
+            to_del_admin_ocr = [k for k, ts in admin_ocr_alert_cache.items() if now - ts > IMAGE_NOTICE_COOLDOWN * 4]
+            for k in to_del_admin_ocr: del admin_ocr_alert_cache[k]
+            to_del_ocr = [fid for fid, v in image_ocr_cache.items() if now - v.get('ts', now) > IMAGE_OCR_CACHE_TTL]
+            for fid in to_del_ocr: del image_ocr_cache[fid]
+            trim_image_ocr_cache_locked()
         with _flood_lock:
             to_del_prompt = [uid for uid, v in captcha_prompt_state.items() if now - v.get('first', now) > UNVERIFIED_WINDOW and v.get('silent_until', 0) < now]
             for uid in to_del_prompt: del captcha_prompt_state[uid]
@@ -1074,6 +1334,18 @@ def explain_spam_text(text):
         reasons.append(f'未命中，风险分 {score}')
     return blocked, score, compact, '；'.join(reasons)
 
+def explain_spam_message(message):
+    content = getattr(message, 'text', None) or getattr(message, 'caption', None) or ''
+    blocked, score, compact, reason = explain_spam_text(content)
+    if blocked:
+        return blocked, score, compact, reason
+    image_text, _ = ocr_photo_text(message, allow_request=False)
+    if image_text:
+        blocked, score, compact, reason = explain_spam_text(image_text)
+        if blocked:
+            return blocked, score, compact, f"Image OCR: {reason}"
+    return blocked, score, compact, reason
+
 def block_spam_message(message, user_id, delete_delay=MSG_AUTO_DELETE_DELAY, ban_user=False):
     if ban_user:
         db_ban_user(user_id, MAX_BAN_DURATION)
@@ -1081,8 +1353,7 @@ def block_spam_message(message, user_id, delete_delay=MSG_AUTO_DELETE_DELAY, ban
     if notice:
         deleter.schedule(user_id, notice.message_id, MSG_AUTO_DELETE_DELAY)
     deleter.schedule(user_id, message.message_id, delete_delay)
-    content = getattr(message, 'text', None) or getattr(message, 'caption', None) or ''
-    blocked, score, compact, reason = explain_spam_text(content)
+    blocked, score, compact, reason = explain_spam_message(message)
     try:
         action = "已封禁，广告内容不会转发给管理员。" if ban_user else "已拦截本条消息，广告内容不会转发给管理员。"
         alert_msg = f"🚫 <b>已拦截广告</b>\n用户: <code>{user_id}</code>\n原因: {html.escape(reason)}\n风险分: <code>{score}</code>\n操作: {action}"
@@ -1096,6 +1367,50 @@ def block_spam_message(message, user_id, delete_delay=MSG_AUTO_DELETE_DELAY, ban
         safe_send(bot.send_message, ADMIN_ID, alert_msg, parse_mode='HTML', reply_markup=markup)
     except Exception as e:
         logging.warning(f"Spam block notice failed for {user_id}: {e}")
+
+def ignore_photo_message(message, user_id, notice_text=None, notice_reason='generic'):
+    if notice_text and should_send_photo_notice(user_id, notice_reason):
+        try:
+            notice = safe_send(bot.send_message, user_id, notice_text)
+            if notice:
+                deleter.schedule(user_id, notice.message_id, MSG_AUTO_DELETE_DELAY)
+        except Exception as e:
+            logging.warning(f"Photo ignore notice failed for {user_id}: {e}")
+    deleter.schedule(user_id, message.message_id, MSG_AUTO_DELETE_DELAY)
+
+def enforce_photo_ocr_gate(message, user_id):
+    if not IMAGE_OCR_ENABLED or getattr(message, 'content_type', None) != 'photo':
+        return True
+    config_ok, config_error = validate_ocr_config()
+    if not config_ok:
+        notify_admin_ocr_issue(user_id, config_error)
+        ignore_photo_message(message, user_id)
+        return False
+    photo = message.photo[-1] if getattr(message, 'photo', None) else None
+    if photo and getattr(photo, 'file_size', 0) and photo.file_size > IMAGE_OCR_MAX_BYTES:
+        limit_mb = IMAGE_OCR_MAX_BYTES // (1024 * 1024)
+        ignore_photo_message(message, user_id, f"图片超过 {limit_mb}MB，无法识别，请压缩后再发送。", 'too_large')
+        return False
+    if not check_photo_cooldown(user_id):
+        ignore_photo_message(message, user_id, f"请等待 {IMAGE_COOLDOWN_SECONDS} 秒后再发送图片。", 'cooldown')
+        return False
+    image_text, error = ocr_photo_text(message)
+    if error == 'image_too_large':
+        limit_mb = IMAGE_OCR_MAX_BYTES // (1024 * 1024)
+        ignore_photo_message(message, user_id, f"图片超过 {limit_mb}MB，无法识别，请压缩后再发送。", 'too_large')
+        return False
+    if error == 'ai_image_too_large':
+        limit_mb = IMAGE_AI_OCR_MAX_BYTES // (1024 * 1024)
+        ignore_photo_message(message, user_id, f"图片超过 AI 识别限制 {limit_mb}MB，请压缩后再发送。", 'ai_too_large')
+        return False
+    if error:
+        notify_admin_ocr_issue(user_id, error)
+        ignore_photo_message(message, user_id)
+        return False
+    if image_text and (is_spam_text(image_text) or spam_risk_score(image_text) >= 6):
+        block_spam_message(message, user_id)
+        return False
+    return True
 
 def inject_noise(text):
     res = ""
@@ -1616,7 +1931,7 @@ def handle_incoming(message):
         if check_deep_spam(message):
             block_spam_message(message, user_id)
             return
-        
+
         if message.content_type == 'text' and CAPTCHA_TEXT_FALLBACK:
             result, data = db_check_and_verify(user_id, message.text.strip())
             if result == 'banned': return
@@ -1658,6 +1973,9 @@ def handle_incoming(message):
         block_spam_message(message, user_id)
         return
 
+    if not is_whitelisted and not enforce_photo_ocr_gate(message, user_id):
+        return
+
     file_size = 0
     if message.content_type == 'photo': file_size = message.photo[-1].file_size
     elif message.content_type == 'video': file_size = message.video.file_size
@@ -1687,10 +2005,6 @@ def handle_incoming(message):
     
     def send_wrapper():
         try:
-            if not is_whitelisted and check_deep_spam(message):
-                block_spam_message(message, user_id)
-                return
-
             sent = None
             if message.content_type == 'text':
                 for part in limit_chunks(split_html_text_with_suffix(message.text, user_info)):
