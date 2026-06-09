@@ -1,172 +1,262 @@
+# CodexBot
 
-# 🤖 Telegram 私聊客服 & 智能反垃圾机器人
+CodexBot 是一个可独立部署的 Telegram 私聊客服/反垃圾机器人。项目包含 Dockerfile、Docker Compose、Redis、PostgreSQL 和 GitHub Actions 镜像构建配置，可以部署到 VPS 的 Docker 环境长期运行。
 
-[![Version](https://img.shields.io/badge/Version-V39.2%20Persistent%20Core-crimson)](https://github.com/yourusername/yourrepository)
-[![Python](https://img.shields.io/badge/Python-3.8%2B-blue)](https://www.python.org/)
-[![Database](https://img.shields.io/badge/Database-SQLite3%20(WAL)-lightgrey)](https://www.sqlite.org/index.html)
-[![Docker](https://img.shields.io/badge/Docker-Supported-2496ED?logo=docker)](https://www.docker.com/)
-[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+## 重要安全说明
 
-这是一个基于 Python (`pyTelegramBotAPI`) 开发的高级 Telegram 机器人。它不仅可以充当**私聊转发/客服机器人**（将用户的消息转发给管理员，管理员直接回复），还内置了强大的**自动反垃圾（Anti-Spam）、人机验证（Captcha）和黑白名单系统**。
+不要把真实 `BOT_TOKEN`、`POSTGRES_PASSWORD`、GitHub Token 或其他密码写进镜像，也不要提交到 GitHub。
 
-## ✨ 主要功能
+本项目的正确做法是：
 
-  * **📨 消息转发系统**：用户发给机器人的消息（文本、图片、视频、贴纸、文件等）会自动转发给管理员。
-  * **🗣️ 双向交流**：管理员直接回复转发的消息，机器人会将内容匿名发送回用户。
-  * **🛡️ 多重安全防护**：
-      * **人机验证**：新用户需完成数学算术验证（支持中文/数字显示）。
-      * **智能反垃圾**：基于正则匹配和远程规则库（Github）自动拦截违规广告（博彩、发票、色情等）。
-      * **防刷屏（Flood Control）**：限制用户短时间内的发送频率。
-  * **🌐 多语言支持**：内置中文和英文，用户可自由切换，管理员回复时自动匹配语言。
-  * **👮 管理员工具箱**：支持封禁、解封、黑名单、白名单、群发广播等指令。
-  * **🧹 自动清理**：自动删除验证消息、菜单消息，保持聊天界面整洁；自动维护数据库体积。
+- 镜像只包含代码和 Python 依赖。
+- `.env.example` 只放示例和说明，可以提交。
+- 真实 `.env` 只放在 VPS 本机，不提交，不打包进镜像。
+- `docker-compose.bot.yml` 在容器启动时从 VPS 的 `.env` 读取变量，再传给容器运行时。
 
------
+项目已经加入：
 
-## 🛠️ 部署指南
+- `.gitignore`: 防止 `.env` 被误提交。
+- `.dockerignore`: 防止 `.env` 被发送到 Docker 构建上下文。
 
-### 1\. 环境要求
+所以你在 VPS 上部署时，应当复制 `.env.example` 为 `.env`，然后只在 `.env` 里填写真实密钥。
 
-  * Python 3.8+
-  * 依赖库：`pyTelegramBotAPI`, `requests`
+## 项目文件
 
-### 2\. 安装依赖
+- `new.py`: Docker 默认运行入口，内容应与 `机器.py` 保持一致。
+- `机器.py`: 机器人主脚本，方便本地阅读或运行。
+- `requirements.txt`: Python 依赖。
+- `Dockerfile`: 构建 CodexBot 镜像。
+- `docker-compose.bot.yml`: 运行 CodexBot、Redis、PostgreSQL。
+- `.env.example`: 中文环境变量示例，不填写真实密钥。
+- `.github/workflows/build.yml`: 自动构建并发布镜像到 GHCR。
 
-创建一个 `requirements.txt` 并写入以下内容：
+## 准备工作
+
+1. 创建 Telegram 机器人。
+   在 Telegram 找 `@BotFather` 创建 bot，拿到 `BOT_TOKEN`。
+
+2. 获取你的 Telegram 数字 ID。
+   可以找 `@userinfobot` 获取，填到 `ADMIN_ID`。
+
+3. 准备一台 VPS。
+   VPS 需要安装 Docker 和 Docker Compose。
+
+## 配置 .env
+
+在 VPS 项目目录里执行：
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+至少填写：
+
+```env
+BOT_TOKEN=你的BotFatherToken
+ADMIN_ID=你的Telegram数字ID
+POSTGRES_PASSWORD=换成强密码
+CAPTCHA_TEXT_FALLBACK=false
+```
+
+注意：`.env` 只留在 VPS，不要提交到 GitHub。
+
+## 方式一：VPS 使用源码构建部署
+
+适合第一次部署，简单直接。
+
+```bash
+git clone -b codex https://github.com/sykin7/codexbot.git
+cd codexbot
+cp .env.example .env
+nano .env
+docker compose -f docker-compose.bot.yml up -d --build
+```
+
+查看日志：
+
+```bash
+docker compose -f docker-compose.bot.yml logs -f codexbot
+```
+
+查看状态：
+
+```bash
+docker compose -f docker-compose.bot.yml ps
+```
+
+停止服务：
+
+```bash
+docker compose -f docker-compose.bot.yml down
+```
+
+更新代码并重新部署：
+
+```bash
+git pull
+docker compose -f docker-compose.bot.yml up -d --build
+```
+
+## 方式二：VPS 使用 GitHub Actions 构建好的镜像
+
+GitHub Actions 会发布镜像到：
 
 ```text
-pyTelegramBotAPI
-requests
+ghcr.io/sykin7/codexbot:latest
+ghcr.io/sykin7/codexbot:sha-<commit>
 ```
 
-然后运行：
+如果镜像是公开的，VPS 可以直接拉取：
 
 ```bash
-pip install -r requirements.txt
+docker pull ghcr.io/sykin7/codexbot:latest
 ```
 
-### 3\. 环境变量配置 (Environment Variables)
-
-你需要通过环境变量来配置机器人，不要直接修改代码中的敏感信息。
-
-| 变量名 | 必填 | 默认值 | 说明 |
-| :--- | :---: | :--- | :--- |
-| `BOT_TOKEN` | ✅ | 无 | 从 @BotFather 获取的 API Token |
-| `ADMIN_ID` | ✅ | 无 | 管理员的数字 ID (可通过 @userinfobot 获取) |
-| `BOT_DB_PATH` | ❌ | `/app/data/bot_core.db` | 数据库存储路径 |
-| `REMOTE_SPAM_URL` | ❌ | (默认 GitHub 地址) | 远程违禁词库 TXT 文件的 URL |
-| `WELCOME_ZH` | ❌ | (默认欢迎语) | 中文欢迎语 |
-| `WELCOME_EN` | ❌ | (默认欢迎语) | 英文欢迎语 |
-
-### 4\. 运行机器人
-
-**直接运行：**
+如果镜像是私有的，先登录 GHCR：
 
 ```bash
-export BOT_TOKEN="你的Token"
-export ADMIN_ID="你的ID"
-python bot.py
+echo YOUR_GITHUB_TOKEN | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
+docker pull ghcr.io/sykin7/codexbot:latest
 ```
 
-**或者使用 Docker (推荐)：**
+`YOUR_GITHUB_TOKEN` 需要有读取 package 的权限。
+
+如果要直接使用 GHCR 镜像，把 `docker-compose.bot.yml` 里的 CodexBot 服务从：
+
+```yaml
+build:
+  context: .
+  dockerfile: Dockerfile
+```
+
+改成：
+
+```yaml
+image: ghcr.io/sykin7/codexbot:latest
+```
+
+然后部署：
 
 ```bash
-docker run -d \
-  -e BOT_TOKEN="你的Token" \
-  -e ADMIN_ID="你的ID" \
-  -v $(pwd)/data:/app/data \
-  --name tg-bot \
-  python:3.9-slim python bot.py
+docker compose -f docker-compose.bot.yml pull
+docker compose -f docker-compose.bot.yml up -d
 ```
 
-*(注意：需要自行构建包含依赖的 Docker 镜像)*
+这个方式同样不会把 `.env` 写进镜像。镜像启动时才会从 VPS 本机 `.env` 读取真实变量。
 
------
+## 推荐 VPS 目录
 
-## 📖 使用说明
+```bash
+mkdir -p /opt/codexbot
+cd /opt/codexbot
+```
 
-### 👤 对于普通用户
+如果使用源码构建，目录里需要：
 
-1.  **开始使用**：发送 `/start`，选择语言（中文/English）。
-2.  **验证**：如果是第一次发消息，机器人会发送一道数学题（例如：`壹 + 3 = ?`），直接回复数字答案即可通过。
-3.  **发送消息**：验证通过后，直接发送文本或媒体文件，管理员会收到通知。
-4.  **防骚扰**：如果发送包含违禁词（如USDT、兼职等）的内容，会被自动封禁。
+```text
+Dockerfile
+new.py
+requirements.txt
+docker-compose.bot.yml
+.env
+```
 
-### 👑 对于管理员 (Admin)
+如果使用 GHCR 镜像，目录里只需要：
 
-#### 1\. 回复用户消息
+```text
+docker-compose.bot.yml
+.env
+```
 
-当机器人转发用户的消息给你时：
+## 服务和数据
 
-  * **直接回复该消息**：你的回复内容（文字、图片等）会通过机器人发送给该用户。
-  * **注意**：如果不引用（Reply）转发的消息，机器人不会知道你要发给谁。
+Compose 会启动三个服务：
 
-#### 2\. 快捷管理指令 (回复模式)
+- `codexbot`: Telegram 机器人。
+- `redis`: 限流、验证码冷却等临时状态。
+- `postgres`: 持久化数据。
 
-在**回复**用户转发过来的消息时，发送以下指令：
+数据保存在 Docker volumes：
 
-| 指令 | 作用 | 说明 |
-| :--- | :--- | :--- |
-| `/ban` | 🚫 **封禁用户** | 封禁 30 天，期间用户无法发消息。 |
-| `/unban` | 🔓 **解封用户** | 解除封禁状态。 |
-| `/awl` | ⚪ **加白名单** | Add Whitelist，跳过反垃圾和频率检测。 |
-| `/abl` | ⚫ **加黑名单** | Add Blacklist，永久拒收该用户消息。 |
+- `bot_data`
+- `bot_redis_data`
+- `bot_postgres_data`
 
-#### 3\. 全局管理指令 (直接发送)
+Redis 和 PostgreSQL 默认不暴露公网端口，只在 Docker 内部网络给 CodexBot 使用。
 
-直接给机器人发送以下指令：
+## 从 SQLite 迁移到 PostgreSQL
 
-| 指令 | 作用 | 示例 |
-| :--- | :--- | :--- |
-| `/gb <内容>` | 📢 **全员广播** | `/gb 大家好，系统维护通知...` |
-| `/awl <ID>` | ➕ **ID 加白** | `/awl 123456789` (无需回复消息) |
-| `/abl <ID>` | ➖ **ID 拉黑** | `/abl 123456789` |
-| `/dwl <ID>` | ❌ **移除白名单** | `/dwl 123456789` |
-| `/dbl <ID>` | ❌ **移除黑名单** | `/dbl 123456789` |
-| `/vlist wl` | 📋 **查看白名单** | 列出所有白名单用户 |
-| `/vlist bl` | 📋 **查看黑名单** | 列出所有黑名单用户 |
+如果你以前有旧的 SQLite 数据库 `/app/data/bot_core.db`，第一次启动时设置：
 
------
+```env
+MIGRATE_SQLITE_TO_POSTGRES=true
+```
 
-## ⚙️ 进阶机制说明
+确认日志显示迁移完成后，改回：
 
-### 反垃圾系统 (Anti-Spam)
+```env
+MIGRATE_SQLITE_TO_POSTGRES=false
+```
 
-机器人会在三个层面拦截垃圾广告：
+然后重启：
 
-1.  **昵称检测**：如果用户的名字、姓氏或用户名包含违禁词（如“出U”、“跑分”），直接秒封。
-2.  **内容检测**：用户发送的消息如果包含违禁词，直接秒封。
-3.  **编辑检测**：即使用户先发正常消息，后来编辑成广告，机器人也能检测到并封禁，同时删除该消息。
+```bash
+docker compose -f docker-compose.bot.yml restart codexbot
+```
 
-*违禁词库每 1 小时自动从 `REMOTE_SPAM_URL` 更新一次。*
+## 常用命令
 
-### 防刷屏 (Flood Control)
+查看日志：
 
-  * 如果用户在 10 秒内发送超过 6 条消息，会被判定为刷屏。
-  * **惩罚**：自动禁言 15 分钟。
+```bash
+docker compose -f docker-compose.bot.yml logs -f codexbot
+```
 
-### 数据库自动维护
+重启 bot：
 
-  * 数据库文件 (`.db`) 如果超过 10MB，系统会自动执行压缩 (`VACUUM`)。
-  * 超过 1000 条的历史消息映射记录会自动滚动删除，防止数据库过大。
-  * 超过 7 天的历史记录会自动清理。
+```bash
+docker compose -f docker-compose.bot.yml restart codexbot
+```
 
------
+更新镜像并重启：
 
+```bash
+docker compose -f docker-compose.bot.yml pull
+docker compose -f docker-compose.bot.yml up -d
+```
 
-## 📈 发展趋势与反馈 (Feedback & Trends)
+备份 PostgreSQL：
 
-项目的持续改进离不开您的参与！
+```bash
+docker compose -f docker-compose.bot.yml exec postgres pg_dump -U bot_user bot_db > bot_db_backup.sql
+```
 
-* **遇到 BUG？** 发现机器人有异常行为，请直接提交 [Issues](../../issues) 反馈，我会尽快修复。
-* **有新点子？** 欢迎提出 Feature Request，让机器人变得更强大。
+## GitHub Actions
 
-如果这个项目对您有帮助，欢迎点亮一颗 ⭐ Star！
+workflow 文件在 `.github/workflows/build.yml`。
 
-[![Star History Chart](https://api.star-history.com/svg?repos=sykin7/tg-private-bot&type=Date)](https://star-history.com/#sykin7/tg-private-bot&Date)
+触发条件：
 
----
-## ⚠️ 免责声明
+- 推送到 `codex` 分支。
+- 修改了 `new.py`、`Dockerfile`、`requirements.txt` 或 workflow 文件。
+- 手动点击 GitHub Actions 的 `Run workflow`。
+
+镜像名：
+
+```text
+ghcr.io/sykin7/codexbot:latest
+```
+
+如果 Actions 页面出现 Node.js 20 deprecated 警告，通常是某个 action 版本还没有完全切到 Node.js 24。构建成功时不影响使用。本项目已使用 `docker/build-push-action@v6`。
+
+## 安全检查清单
+
+- `.env` 不提交到 GitHub。
+- `.env` 不进入 Docker 镜像。
+- `POSTGRES_PASSWORD` 使用强密码。
+- 私有 GHCR 镜像需要在 VPS 上登录后才能拉取。
+- 不需要开放 Redis/PostgreSQL 公网端口。
 
 本项目仅供技术研究与个人安全防护使用。使用者应遵守当地法律法规及 Telegram 服务条款。请勿用于非法用途。
 
