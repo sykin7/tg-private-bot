@@ -88,6 +88,7 @@ FLOOD_WINDOW = 10
 MAX_MSGS_PER_WINDOW = 6
 GLOBAL_MESSAGE_LIMIT = 20
 OUTBOUND_MESSAGE_LIMIT = 25
+DELETE_MESSAGE_LIMIT = 2
 FLOOD_PENALTY_TIME = 900
 CAPTCHA_TIMEOUT = 120
 CAPTCHA_PROMPT_COOLDOWN = 45
@@ -99,14 +100,14 @@ MAX_BAN_DURATION = 10800
 CAPTCHA_MAX_RETRIES = 3
 SPAM_UPDATE_INTERVAL = 3600
 REMOTE_MAX_CONTENT_BYTES = 128 * 1024
-MAX_SPAM_KEYWORDS = 2000
+MAX_SPAM_KEYWORDS = 10000
 MSG_AUTO_DELETE_DELAY = 10
 CAPTCHA_DELETE_DELAY = 60
 CACHE_TTL = 300
 DB_TOUCH_INTERVAL = 3600
 DB_CLEANUP_INTERVAL = 3600
 
-DB_MAX_ROWS = 1000
+DB_MAX_ROWS = 10000
 DB_SIZE_LIMIT_MB = 10
 DB_RETENTION_DAYS = 7
 MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
@@ -114,10 +115,11 @@ TELEGRAM_TEXT_LIMIT = 4096
 TELEGRAM_CAPTION_LIMIT = 1024
 DELETE_QUEUE_MAXSIZE = 5000
 MAX_FORWARD_TEXT_PARTS = 10
+AUTO_REPLY_COOLDOWN = 30
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-if not BOT_TOKEN or not ADMIN_ID:
+if not BOT_TOKEN or ADMIN_ID is None:
     logging.error("Error: BOT_TOKEN and ADMIN_ID must be set.")
     exit(1)
 
@@ -133,8 +135,15 @@ _outbound_limit_lock = threading.Lock()
 user_flood_control = {}
 media_group_cache = {}
 user_status_cache = {}
+auto_reply_cache = {}
 captcha_prompt_state = {}
 spam_regex_pattern = None
+SPAM_RULE_SOURCE = 'none'
+SPAM_RULE_KEYWORD_COUNT = 0
+SPAM_RULE_REMOTE_COUNT = 0
+SPAM_RULE_UPDATED_AT = 0
+SPAM_RULE_LAST_ERROR = ''
+_remote_rules_admin_notified = False
 _db_conn = None
 _redis_client = None
 _use_postgres = bool(DATABASE_URL and psycopg)
@@ -143,6 +152,8 @@ _global_token_bucket = GLOBAL_MESSAGE_LIMIT
 _last_token_update = time.time()
 _outbound_token_bucket = OUTBOUND_MESSAGE_LIMIT
 _last_outbound_token_update = time.time()
+_delete_token_bucket = DELETE_MESSAGE_LIMIT
+_last_delete_token_update = time.time()
 _last_db_cleanup = 0
 
 def get_redis_client():
@@ -189,6 +200,18 @@ def redis_delete(key):
         logging.warning(f"Redis delete failed for {key}: {e}")
         return False
 
+def should_send_auto_reply(user_id):
+    key = f'bot:auto_reply:{user_id}'
+    added = redis_set_once(key, int(time.time()), AUTO_REPLY_COOLDOWN)
+    if added is not None: return added
+    now = time.time()
+    with _cache_lock:
+        state = auto_reply_cache.setdefault(user_id, {'ts': 0})
+        if now - state.get('ts', 0) < AUTO_REPLY_COOLDOWN:
+            return False
+        state['ts'] = now
+        return True
+
 def check_outbound_limit():
     global _outbound_token_bucket, _last_outbound_token_update
     allowed = redis_rate_limit('bot:rate:outbound:1s', OUTBOUND_MESSAGE_LIMIT, 1)
@@ -205,10 +228,50 @@ def check_outbound_limit():
             return True
         return False
 
+def check_delete_limit():
+    global _delete_token_bucket, _last_delete_token_update
+    allowed = redis_rate_limit('bot:rate:delete:1s', DELETE_MESSAGE_LIMIT, 1)
+    if allowed is not None: return allowed
+    with _outbound_limit_lock:
+        now = time.time()
+        time_passed = now - _last_delete_token_update
+        new_tokens = int(time_passed * DELETE_MESSAGE_LIMIT)
+        if new_tokens > 0:
+            _delete_token_bucket = min(DELETE_MESSAGE_LIMIT, _delete_token_bucket + new_tokens)
+            _last_delete_token_update = now
+        if _delete_token_bucket > 0:
+            _delete_token_bucket -= 1
+            return True
+        return False
+
 def safe_send(func, *args, **kwargs):
-    while not check_outbound_limit():
-        time.sleep(0.05)
-    return func(*args, **kwargs)
+    last_error = None
+    for _ in range(3):
+        while not check_outbound_limit():
+            time.sleep(0.05)
+        try:
+            return func(*args, **kwargs)
+        except apihelper.ApiTelegramException as e:
+            last_error = e
+            retry_after = 0
+            try:
+                result = getattr(e, 'result_json', None) or {}
+                retry_after = int(result.get('parameters', {}).get('retry_after', 0))
+            except Exception:
+                retry_after = 0
+            if retry_after > 0:
+                sleep_for = min(retry_after + 1, 60)
+                logging.warning(f"Telegram rate limit hit; sleeping {sleep_for}s before retry.")
+                time.sleep(sleep_for)
+                continue
+            raise
+    if last_error:
+        raise last_error
+
+def safe_delete(chat_id, message_id):
+    while not check_delete_limit():
+        time.sleep(0.1)
+    return safe_send(bot.delete_message, chat_id, message_id)
 
 class MsgDeleter:
     def __init__(self):
@@ -231,7 +294,7 @@ class MsgDeleter:
                 delete_at, chat_id, message_id = task
                 now = time.time()
                 if now >= delete_at:
-                    try: safe_send(bot.delete_message, chat_id, message_id)
+                    try: safe_delete(chat_id, message_id)
                     except Exception as e: logging.debug(f"Delete message failed: {e}")
                 else:
                     self.queue.put(task)
@@ -281,6 +344,11 @@ STRINGS = {
     'menu_contact': {'zh': "📨 联系管理员", 'en': "📨 Contact Admin"},
     'menu_lang': {'zh': "🌐 切换语言", 'en': "🌐 Change Language"},
     'menu_help': {'zh': "❓ 常见问题", 'en': "❓ FAQ"},
+    'admin_menu_status': {'zh': "📊 机器人状态", 'en': "📊 Bot Status"},
+    'admin_menu_reload_rules': {'zh': "🔄 重载广告规则", 'en': "🔄 Reload Rules"},
+    'admin_menu_ban_list': {'zh': "🚫 封禁名单", 'en': "🚫 Ban List"},
+    'admin_menu_wl': {'zh': "⚪ 白名单", 'en': "⚪ Whitelist"},
+    'admin_menu_bl': {'zh': "⚫ 黑名单", 'en': "⚫ Blacklist"},
     'blacklist_ban': {'zh': "🚫 <b>您已被管理员列入黑名单，所有消息将被忽略。</b>", 'en': "🚫 <b>You have been blacklisted by the admin.</b>"},
     'file_too_large': {'zh': "⚠️ 文件过大 (超过50MB)，无法发送。", 'en': "⚠️ File too large (over 50MB)."}
 }
@@ -485,7 +553,7 @@ def db_check_and_verify(user_id, input_ans=None, token=None):
             return 'timeout_ban', ban_until
         if token is not None and expected_token and not secrets.compare_digest(str(token), str(expected_token)):
             return 'stale_captcha', 0
-        token_ok = token and expected_token and secrets.compare_digest(str(token), str(expected_token))
+        token_ok = token and expected_token and secrets.compare_digest(str(token), str(expected_token)) and input_ans is not None and str(input_ans).strip() == str(expected)
         text_ok = CAPTCHA_TEXT_FALLBACK and input_ans is not None and str(input_ans).strip() == str(expected)
         if token_ok or text_ok:
             db_execute(conn, "UPDATE users SET verified=1, ban_until=0 WHERE user_id=?", (user_id,))
@@ -527,6 +595,13 @@ def db_unban_user(user_id):
         db_execute(conn, "UPDATE users SET ban_until=0 WHERE user_id=?", (user_id,))
         conn.commit()
     invalidate_cache(user_id)
+
+def db_get_ban_list(limit=50):
+    now = time.time()
+    with _db_lock:
+        conn = get_db_conn()
+        cur = db_execute(conn, "SELECT user_id, ban_until FROM users WHERE ban_until > ? ORDER BY ban_until DESC LIMIT ?", (now, limit))
+        return cur.fetchall()
 
 def db_save_captcha(user_id, answer, token):
     with _db_lock:
@@ -580,9 +655,14 @@ def db_cleanup_map():
 
 def db_add_to_list(table_name, user_id):
     if table_name not in ('whitelist', 'blacklist'): return False
+    opposite = 'blacklist' if table_name == 'whitelist' else 'whitelist'
     with _db_lock:
         conn = get_db_conn()
         try:
+            db_execute(conn, f"DELETE FROM {opposite} WHERE user_id=?", (user_id,))
+            db_insert_user_ignore(conn, user_id, time.time())
+            db_execute(conn, "UPDATE users SET ban_until=0, last_seen=? WHERE user_id=?", (time.time(), user_id))
+            db_execute(conn, "DELETE FROM pending_captcha WHERE user_id=?", (user_id,))
             if db_is_postgres():
                 db_execute(conn, f"INSERT INTO {table_name} (user_id, added_at) VALUES (?, ?) ON CONFLICT (user_id) DO UPDATE SET added_at=EXCLUDED.added_at", (user_id, time.time()))
             else:
@@ -592,7 +672,9 @@ def db_add_to_list(table_name, user_id):
         except Exception:
             conn.rollback()
             success = False
-    if success: invalidate_cache(user_id)
+    if success:
+        invalidate_cache(user_id)
+        clear_captcha_prompt_state(user_id)
     return success
 
 def db_remove_from_list(table_name, user_id):
@@ -740,18 +822,23 @@ def build_spam_regex(keywords):
     except re.error: return None
 
 def load_fallback_spam_rules():
-    global spam_regex_pattern
+    global spam_regex_pattern, SPAM_RULE_SOURCE, SPAM_RULE_KEYWORD_COUNT, SPAM_RULE_REMOTE_COUNT, SPAM_RULE_UPDATED_AT, SPAM_RULE_LAST_ERROR
     fallback_regex = build_spam_regex(set(FALLBACK_SPAM_KEYWORDS))
     if fallback_regex:
         with _spam_lock:
             spam_regex_pattern = fallback_regex
+            SPAM_RULE_SOURCE = 'fallback'
+            SPAM_RULE_KEYWORD_COUNT = len(FALLBACK_SPAM_KEYWORDS)
+            SPAM_RULE_REMOTE_COUNT = 0
+            SPAM_RULE_UPDATED_AT = time.time()
+            SPAM_RULE_LAST_ERROR = ''
         logging.info(f"Fallback spam rules loaded: {len(FALLBACK_SPAM_KEYWORDS)}")
         return True
     logging.warning("Fallback spam rules failed to load.")
     return False
 
 def update_spam_rules():
-    global spam_regex_pattern
+    global spam_regex_pattern, SPAM_RULE_SOURCE, SPAM_RULE_KEYWORD_COUNT, SPAM_RULE_REMOTE_COUNT, SPAM_RULE_UPDATED_AT, SPAM_RULE_LAST_ERROR, _remote_rules_admin_notified
     while True:
         try:
             text = safe_requests_get(REMOTE_SPAM_URL)
@@ -765,11 +852,46 @@ def update_spam_rules():
             if new_regex:
                 with _spam_lock:
                     spam_regex_pattern = new_regex
-                logging.info(f"Rules Updated: {len(all_keywords)}")
+                    SPAM_RULE_SOURCE = 'remote' if remote_words else 'fallback'
+                    SPAM_RULE_KEYWORD_COUNT = min(len(all_keywords), MAX_SPAM_KEYWORDS)
+                    SPAM_RULE_REMOTE_COUNT = len(remote_words)
+                    SPAM_RULE_UPDATED_AT = time.time()
+                    SPAM_RULE_LAST_ERROR = '' if remote_words else '远程规则未返回内容，当前使用内置兜底规则。'
+                logging.info(f"Rules Updated: {len(all_keywords)} keywords, remote {len(remote_words)}, compile limit {MAX_SPAM_KEYWORDS}")
+                if remote_words and not _remote_rules_admin_notified:
+                    notify_admin_remote_rules_loaded(len(remote_words), min(len(all_keywords), MAX_SPAM_KEYWORDS))
+                    _remote_rules_admin_notified = True
             else:
                 logging.warning("Spam rules build returned empty regex; keeping previous rules.")
-        except Exception as e: logging.warning(f"Spam rules update failed: {e}")
+        except Exception as e:
+            SPAM_RULE_LAST_ERROR = str(e)
+            logging.warning(f"Spam rules update failed: {e}")
         time.sleep(SPAM_UPDATE_INTERVAL)
+
+def reload_spam_rules_once():
+    global spam_regex_pattern, SPAM_RULE_SOURCE, SPAM_RULE_KEYWORD_COUNT, SPAM_RULE_REMOTE_COUNT, SPAM_RULE_UPDATED_AT, SPAM_RULE_LAST_ERROR, _remote_rules_admin_notified
+    text = safe_requests_get(REMOTE_SPAM_URL)
+    remote_words = set()
+    if text:
+        for line in text.splitlines():
+            w = line.strip()
+            if w: remote_words.add(w)
+    all_keywords = set(FALLBACK_SPAM_KEYWORDS) | remote_words
+    new_regex = build_spam_regex(all_keywords)
+    if not new_regex:
+        SPAM_RULE_LAST_ERROR = '广告规则编译失败，已保留上一版规则。'
+        return False, SPAM_RULE_LAST_ERROR
+    with _spam_lock:
+        spam_regex_pattern = new_regex
+        SPAM_RULE_SOURCE = 'remote' if remote_words else 'fallback'
+        SPAM_RULE_KEYWORD_COUNT = min(len(all_keywords), MAX_SPAM_KEYWORDS)
+        SPAM_RULE_REMOTE_COUNT = len(remote_words)
+        SPAM_RULE_UPDATED_AT = time.time()
+        SPAM_RULE_LAST_ERROR = '' if remote_words else '远程规则未返回内容，当前使用内置兜底规则。'
+    if remote_words:
+        _remote_rules_admin_notified = True
+        return True, f"第三方广告规则已生效：远程 {len(remote_words)} 条，实际编译 {min(len(all_keywords), MAX_SPAM_KEYWORDS)} 条。"
+    return False, '第三方广告规则没有拉取成功，当前仍使用内置兜底规则。'
 
 def cleanup_dict():
     global _last_db_cleanup
@@ -790,6 +912,8 @@ def cleanup_dict():
         with _cache_lock:
             to_del_cache = [k for k, v in user_status_cache.items() if now - v['ts'] > CACHE_TTL]
             for k in to_del_cache: del user_status_cache[k]
+            to_del_auto = [uid for uid, v in auto_reply_cache.items() if now - v.get('ts', now) > AUTO_REPLY_COOLDOWN * 4]
+            for uid in to_del_auto: del auto_reply_cache[uid]
         with _flood_lock:
             to_del_prompt = [uid for uid, v in captcha_prompt_state.items() if now - v.get('first', now) > UNVERIFIED_WINDOW and v.get('silent_until', 0) < now]
             for uid in to_del_prompt: del captcha_prompt_state[uid]
@@ -950,8 +1074,9 @@ def explain_spam_text(text):
         reasons.append(f'未命中，风险分 {score}')
     return blocked, score, compact, '；'.join(reasons)
 
-def block_spam_message(message, user_id, delete_delay=MSG_AUTO_DELETE_DELAY):
-    db_ban_user(user_id, MAX_BAN_DURATION)
+def block_spam_message(message, user_id, delete_delay=MSG_AUTO_DELETE_DELAY, ban_user=False):
+    if ban_user:
+        db_ban_user(user_id, MAX_BAN_DURATION)
     notice = safe_send(bot.send_message, user_id, get_text('spam_ban', user_id))
     if notice:
         deleter.schedule(user_id, notice.message_id, MSG_AUTO_DELETE_DELAY)
@@ -959,8 +1084,16 @@ def block_spam_message(message, user_id, delete_delay=MSG_AUTO_DELETE_DELAY):
     content = getattr(message, 'text', None) or getattr(message, 'caption', None) or ''
     blocked, score, compact, reason = explain_spam_text(content)
     try:
-        alert_msg = f"🚫 <b>已拦截广告</b>\n用户: <code>{user_id}</code>\n原因: {html.escape(reason)}\n风险分: <code>{score}</code>\n操作: 已封禁，广告内容不会转发给管理员。"
-        safe_send(bot.send_message, ADMIN_ID, alert_msg, parse_mode='HTML')
+        action = "已封禁，广告内容不会转发给管理员。" if ban_user else "已拦截本条消息，广告内容不会转发给管理员。"
+        alert_msg = f"🚫 <b>已拦截广告</b>\n用户: <code>{user_id}</code>\n原因: {html.escape(reason)}\n风险分: <code>{score}</code>\n操作: {action}"
+        markup = None
+        if not ban_user:
+            markup = InlineKeyboardMarkup()
+            markup.row(
+                InlineKeyboardButton("封禁用户", callback_data=f"spam_ban:{user_id}"),
+                InlineKeyboardButton("不封禁", callback_data=f"spam_keep:{user_id}")
+            )
+        safe_send(bot.send_message, ADMIN_ID, alert_msg, parse_mode='HTML', reply_markup=markup)
     except Exception as e:
         logging.warning(f"Spam block notice failed for {user_id}: {e}")
 
@@ -982,7 +1115,13 @@ def send_menu(user_id, text=None):
     stat = get_cached_user_status(user_id)
     lang = normalize_lang(stat['lang'])
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(KeyboardButton(STRINGS['menu_contact'][lang]), KeyboardButton(STRINGS['menu_help'][lang]), KeyboardButton(STRINGS['menu_lang'][lang]))
+    if user_id == ADMIN_ID:
+        markup.row(KeyboardButton(STRINGS['admin_menu_status'][lang]), KeyboardButton(STRINGS['admin_menu_reload_rules'][lang]))
+        markup.row(KeyboardButton(STRINGS['admin_menu_ban_list'][lang]), KeyboardButton(STRINGS['admin_menu_wl'][lang]))
+        markup.row(KeyboardButton(STRINGS['admin_menu_bl'][lang]), KeyboardButton(STRINGS['menu_help'][lang]))
+        markup.row(KeyboardButton(STRINGS['menu_lang'][lang]))
+    else:
+        markup.add(KeyboardButton(STRINGS['menu_contact'][lang]), KeyboardButton(STRINGS['menu_help'][lang]), KeyboardButton(STRINGS['menu_lang'][lang]))
     msg = text if text else (WELCOME_ZH if lang == 'zh' else WELCOME_EN)
     try:
         m = safe_send(bot.send_message, user_id, msg, reply_markup=markup)
@@ -1047,7 +1186,7 @@ def get_help_message(is_admin, user_id):
     lang = normalize_lang(stat['lang'])
     help_msg = "📚 <b>机器人指令帮助</b>\n\n👉 <b>用户指令</b>\n• <code>/start</code> / <code>/help</code>: 打开菜单\n"
     if is_admin:
-        help_msg += "\n👑 <b>管理员指令 (Admin)</b>\n• 回复用户转发消息 <code>/ban</code>: 封禁 30 天\n• 回复用户转发消息 <code>/unban</code>: 解封\n• 回复用户转发消息 <code>/awl</code>: 加白名单\n• 回复用户转发消息 <code>/abl</code>: 加黑名单\n• <code>/gb &lt;内容&gt;</code>: 广播\n• <code>/awl &lt;ID&gt;</code>: ID 加白\n• <code>/dwl &lt;ID&gt;</code>: ID 移出白名单\n• <code>/abl &lt;ID&gt;</code>: ID 加黑\n• <code>/dbl &lt;ID&gt;</code>: ID 移出黑名单\n• <code>/vlist wl</code>: 看白名单\n• <code>/vlist bl</code>: 看黑名单\n• <code>/spamtest &lt;内容&gt;</code>: 测试广告规则\n• <code>/id</code>: 查看当前 Telegram 数字 ID"
+        help_msg += "\n👑 <b>管理员指令 (Admin)</b>\n• 回复用户转发消息 <code>/ban</code>: 封禁 30 天\n• 回复用户转发消息 <code>/unban</code>: 解封\n• 回复用户转发消息 <code>/awl</code>: 加白名单\n• 回复用户转发消息 <code>/abl</code>: 加黑名单\n• <code>/gb &lt;内容&gt;</code>: 广播\n• <code>/awl &lt;ID&gt;</code>: ID 加白\n• <code>/dwl &lt;ID&gt;</code>: ID 移出白名单\n• <code>/abl &lt;ID&gt;</code>: ID 加黑\n• <code>/dbl &lt;ID&gt;</code>: ID 移出黑名单\n• <code>/unban &lt;ID&gt;</code>: 按 ID 解封临时封禁\n• <code>/vlist wl</code>: 看白名单\n• <code>/vlist bl</code>: 看黑名单\n• <code>/vlist ban</code>: 看临时封禁名单\n• <code>/status</code>: 查看机器人和广告规则状态\n• <code>/reloadrules</code>: 手动重载第三方广告规则\n• <code>/spamtest &lt;内容&gt;</code>: 测试广告规则\n• <code>/id</code>: 查看当前 Telegram 数字 ID"
     return help_msg
 
 def admin_reply_target(message):
@@ -1059,6 +1198,46 @@ def admin_usage(message, text):
     m = safe_reply_to(message, text, parse_mode='HTML')
     if m:
         deleter.schedule(ADMIN_ID, m.message_id, 15)
+
+def send_admin_status(message):
+    db_type = 'PostgreSQL' if db_is_postgres() else 'SQLite'
+    redis_state = '启用' if get_redis_client() else '未启用'
+    msg = (
+        f"✅ <b>CodexBot 状态</b>\n"
+        f"运行：<code>正常</code>\n"
+        f"数据库：<code>{db_type}</code>\n"
+        f"Redis：<code>{redis_state}</code>\n"
+        f"入口脚本：<code>new.py</code>\n\n"
+        f"{html.escape(spam_rule_status_text())}"
+    )
+    safe_reply_to(message, msg, parse_mode='HTML')
+
+def send_admin_reload_rules(message):
+    ok, detail = reload_spam_rules_once()
+    title = "✅ 广告规则重载完成" if ok else "⚠️ 广告规则重载未成功"
+    msg = f"{title}\n{html.escape(detail)}\n\n{html.escape(spam_rule_status_text())}"
+    safe_reply_to(message, msg, parse_mode='HTML')
+
+def send_admin_list(message, list_arg):
+    if list_arg == 'ban':
+        data = db_get_ban_list(50)
+        if not data:
+            safe_reply_to(message, "📋 临时封禁名单：空")
+            return
+        lines = []
+        markup = InlineKeyboardMarkup()
+        now = time.time()
+        for user_id, ban_until in data:
+            remain = max(0, int(ban_until - now))
+            lines.append(f"• {user_id}，剩余 {remain // 60} 分钟")
+            markup.add(InlineKeyboardButton(f"解封 {user_id}", callback_data=f"unban:{user_id}"))
+        safe_reply_to(message, "📋 临时封禁名单:\n" + "\n".join(lines), reply_markup=markup)
+        return
+    list_name = 'whitelist' if list_arg == 'wl' else 'blacklist'
+    data = db_get_list(list_name)
+    rows = "\n".join([f"• {u[0]}" for u in data[:50]]) or "空"
+    msg = f"📋 {list_name} ({len(data)}):\n" + rows
+    safe_reply_to(message, msg)
 
 def format_spam_sample(text, limit=120):
     text = normalize_text(text or '')
@@ -1083,6 +1262,53 @@ def broadcast_thread(text):
     try: send_long_message(ADMIN_ID, f"📢 广播结束\n✅: {success_count}\n❌: {fail_count}")
     except Exception as e: logging.warning(f"Broadcast summary failed: {e}")
 
+def spam_rule_status_text():
+    with _spam_lock:
+        source = SPAM_RULE_SOURCE
+        total = SPAM_RULE_KEYWORD_COUNT
+        remote = SPAM_RULE_REMOTE_COUNT
+        updated_at = SPAM_RULE_UPDATED_AT
+        last_error = SPAM_RULE_LAST_ERROR
+    source_text = '第三方 URL 规则 + 内置兜底规则' if source == 'remote' else ('内置兜底规则' if source == 'fallback' else '未加载')
+    updated_text = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(updated_at)) if updated_at else '未更新'
+    text = (
+        f"🛡️ 广告规则状态\n"
+        f"来源：{source_text}\n"
+        f"已生效关键词：{total}\n"
+        f"第三方规则：{remote}\n"
+        f"更新时间：{updated_text}"
+    )
+    if last_error:
+        text += f"\n说明：{html.escape(last_error)}"
+    return text
+
+def notify_admin_startup():
+    try:
+        db_type = 'PostgreSQL' if db_is_postgres() else 'SQLite'
+        msg = (
+            f"✅ <b>CodexBot 已启动</b>\n"
+            f"数据库：<code>{db_type}</code>\n"
+            f"Redis：<code>{'启用' if get_redis_client() else '未启用'}</code>\n"
+            f"入口脚本：<code>new.py</code>\n\n"
+            f"{html.escape(spam_rule_status_text())}\n\n"
+            f"第三方广告规则会在后台拉取；成功后会再通知一次。"
+        )
+        safe_send(bot.send_message, ADMIN_ID, msg, parse_mode='HTML')
+    except Exception as e:
+        logging.warning(f"Startup admin notice failed: {e}")
+
+def notify_admin_remote_rules_loaded(remote_count, compiled_count):
+    try:
+        msg = (
+            f"✅ <b>第三方广告规则已生效</b>\n"
+            f"远程规则：<code>{remote_count}</code> 条\n"
+            f"当前实际编译生效：<code>{compiled_count}</code> 条\n"
+            f"规则地址：<code>{html.escape(REMOTE_SPAM_URL)}</code>"
+        )
+        safe_send(bot.send_message, ADMIN_ID, msg, parse_mode='HTML')
+    except Exception as e:
+        logging.warning(f"Remote spam rules notice failed: {e}")
+
 @bot.message_handler(commands=['id'])
 def handle_id_command(message):
     if message.chat.type != 'private': return
@@ -1105,6 +1331,34 @@ def handle_spamtest_command(message):
         f"风险分：<code>{score}</code>"
     )
     safe_reply_to(message, reply, parse_mode='HTML')
+
+@bot.message_handler(commands=['status'])
+def handle_status_command(message):
+    if message.from_user.id != ADMIN_ID: return
+    send_admin_status(message)
+
+@bot.message_handler(commands=['reloadrules'])
+def handle_reload_rules_command(message):
+    if message.from_user.id != ADMIN_ID: return
+    send_admin_reload_rules(message)
+
+@bot.message_handler(commands=['unban'])
+def handle_unban_command(message):
+    if message.from_user.id != ADMIN_ID: return
+    parts = message.text.split()
+    target_uid = None
+    if len(parts) >= 2:
+        try: target_uid = int(parts[1].strip())
+        except:
+            admin_usage(message, "ID 必须是纯数字，例如：<code>/unban 123456789</code>")
+            return
+    else:
+        target_uid = admin_reply_target(message)
+    if not target_uid:
+        admin_usage(message, "用法：<code>/unban 用户ID</code>，或回复用户转发消息发送 <code>/unban</code>")
+        return
+    db_unban_user(target_uid)
+    safe_reply_to(message, f"✅ ID {target_uid} 已解除临时封禁。")
 
 @bot.message_handler(commands=['gb'])
 def handle_broadcast_command(message):
@@ -1146,14 +1400,10 @@ def handle_list_commands(message):
             else: safe_reply_to(message, f"ℹ️ ID {target_uid} 不在 {list_name} 中。")
     elif cmd == 'vlist':
         list_arg = parts[1].lower() if len(parts) > 1 else ''
-        if list_arg not in ['wl', 'bl']:
-            admin_usage(message, "用法：<code>/vlist wl</code> 查看白名单，<code>/vlist bl</code> 查看黑名单")
+        if list_arg not in ['wl', 'bl', 'ban']:
+            admin_usage(message, "用法：<code>/vlist wl</code> 查看白名单，<code>/vlist bl</code> 查看黑名单，<code>/vlist ban</code> 查看临时封禁名单")
             return
-        list_name = 'whitelist' if list_arg == 'wl' else 'blacklist'
-        data = db_get_list(list_name)
-        rows = "\n".join([f"• {u[0]}" for u in data[:50]]) or "空"
-        msg = f"📋 {list_name} ({len(data)}):\n" + rows
-        safe_reply_to(message, msg)
+        send_admin_list(message, list_arg)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('set_lang:'))
 def handle_language_callback(call):
@@ -1166,7 +1416,7 @@ def handle_language_callback(call):
     clear_captcha_prompt_state(call.from_user.id)
     try:
         safe_send(bot.answer_callback_query, call.id, "OK")
-        safe_send(bot.delete_message, call.message.chat.id, call.message.message_id)
+        safe_delete(call.message.chat.id, call.message.message_id)
         send_menu(call.from_user.id, get_text('lang_set', call.from_user.id))
     except Exception as e: logging.warning(f"Language callback failed for {call.from_user.id}: {e}")
 
@@ -1183,7 +1433,7 @@ def handle_captcha_callback(call):
     try:
         if result == 'success':
             safe_send(bot.answer_callback_query, call.id, "OK")
-            try: safe_send(bot.delete_message, call.message.chat.id, call.message.message_id)
+            try: safe_delete(call.message.chat.id, call.message.message_id)
             except Exception as e: logging.debug(f"Captcha message delete failed: {e}")
             send_menu(user_id, VERIFIED_ZH if normalize_lang(get_cached_user_status(user_id).get('lang')) == 'zh' else VERIFIED_EN)
         elif result in ['timeout_ban', 'fail_ban']:
@@ -1197,6 +1447,52 @@ def handle_captcha_callback(call):
             safe_send(bot.answer_callback_query, call.id, get_text('wait_verify', user_id), show_alert=True)
     except Exception as e:
         logging.warning(f"Captcha callback handling failed for {user_id}: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('unban:'))
+def handle_unban_callback(call):
+    if call.from_user.id != ADMIN_ID:
+        try: safe_send(bot.answer_callback_query, call.id, "Only admin")
+        except Exception as e: logging.warning(f"Unban non-admin answer failed: {e}")
+        return
+    try:
+        target_uid = int(call.data.split(':', 1)[1])
+    except Exception:
+        try: safe_send(bot.answer_callback_query, call.id, "Invalid")
+        except Exception as e: logging.warning(f"Invalid unban callback answer failed: {e}")
+        return
+    db_unban_user(target_uid)
+    try:
+        safe_send(bot.answer_callback_query, call.id, "已解封")
+        safe_send(bot.edit_message_text, f"✅ 已解除临时封禁\n用户: <code>{target_uid}</code>", call.message.chat.id, call.message.message_id, parse_mode='HTML', reply_markup=None)
+    except Exception as e:
+        logging.warning(f"Unban callback failed for {target_uid}: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('spam_ban:') or call.data.startswith('spam_keep:'))
+def handle_spam_action_callback(call):
+    if call.from_user.id != ADMIN_ID:
+        try: safe_send(bot.answer_callback_query, call.id, "Only admin")
+        except Exception as e: logging.warning(f"Spam action non-admin answer failed: {e}")
+        return
+    try:
+        action, raw_uid = call.data.split(':', 1)
+        target_uid = int(raw_uid)
+    except Exception:
+        try: safe_send(bot.answer_callback_query, call.id, "Invalid")
+        except Exception as e: logging.warning(f"Invalid spam action answer failed: {e}")
+        return
+
+    if action == 'spam_ban':
+        db_ban_user(target_uid, MAX_BAN_DURATION)
+        text = f"🚫 <b>已封禁用户</b>\n用户: <code>{target_uid}</code>\n操作: 管理员确认封禁。"
+        answer = "已封禁"
+    else:
+        text = f"✅ <b>已保留用户</b>\n用户: <code>{target_uid}</code>\n操作: 本次广告已拦截，不封禁用户。"
+        answer = "不封禁"
+    try:
+        safe_send(bot.edit_message_text, text, call.message.chat.id, call.message.message_id, parse_mode='HTML', reply_markup=None)
+        safe_send(bot.answer_callback_query, call.id, answer)
+    except Exception as e:
+        logging.warning(f"Spam action callback failed for {target_uid}: {e}")
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome_handler(message):
@@ -1228,8 +1524,23 @@ def handle_admin_menu(message):
     menu_contact_values = {STRINGS['menu_contact']['zh'], STRINGS['menu_contact']['en']}
     menu_help_values = {STRINGS['menu_help']['zh'], STRINGS['menu_help']['en']}
     menu_lang_values = {STRINGS['menu_lang']['zh'], STRINGS['menu_lang']['en']}
+    admin_status_values = {STRINGS['admin_menu_status']['zh'], STRINGS['admin_menu_status']['en']}
+    admin_reload_values = {STRINGS['admin_menu_reload_rules']['zh'], STRINGS['admin_menu_reload_rules']['en']}
+    admin_ban_values = {STRINGS['admin_menu_ban_list']['zh'], STRINGS['admin_menu_ban_list']['en']}
+    admin_wl_values = {STRINGS['admin_menu_wl']['zh'], STRINGS['admin_menu_wl']['en']}
+    admin_bl_values = {STRINGS['admin_menu_bl']['zh'], STRINGS['admin_menu_bl']['en']}
     if text in menu_lang_values:
         ask_language(user_id, force=True)
+    elif text in admin_status_values:
+        send_admin_status(message)
+    elif text in admin_reload_values:
+        send_admin_reload_rules(message)
+    elif text in admin_ban_values:
+        send_admin_list(message, 'ban')
+    elif text in admin_wl_values:
+        send_admin_list(message, 'wl')
+    elif text in admin_bl_values:
+        send_admin_list(message, 'bl')
     elif text in menu_help_values:
         m = send_long_message(user_id, get_help_message(True, user_id), parse_mode='HTML')
         deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
@@ -1243,13 +1554,12 @@ def handle_edited_message(message):
     user_id = message.from_user.id
     user_status = get_cached_user_status(user_id)
     
-    if user_status['wl']: return
     if user_status['bl']: return
 
-    if check_deep_spam(message):
+    if not user_status['wl'] and check_deep_spam(message):
         db_ban_user(user_id, MAX_BAN_DURATION)
         try:
-            safe_send(bot.delete_message, message.chat.id, message.message_id)
+            safe_delete(message.chat.id, message.message_id)
             m = safe_send(bot.send_message, user_id, get_text('spam_edit_ban', user_id), parse_mode='HTML')
             deleter.schedule(user_id, m.message_id, 30)
             content = getattr(message, 'text', None) or getattr(message, 'caption', None) or ''
@@ -1257,6 +1567,27 @@ def handle_edited_message(message):
             alert_msg = f"⚠️ <b>已拦截违规编辑</b>\n用户: <code>{user_id}</code>\n原因: {html.escape(reason)}\n风险分: <code>{score}</code>\n操作: 已封禁并删除消息。"
             safe_send(bot.send_message, ADMIN_ID, alert_msg, parse_mode='HTML')
         except Exception as e: logging.warning(f"Edited spam handling failed for {user_id}: {e}")
+        return
+
+    try:
+        content = getattr(message, 'text', None) or getattr(message, 'caption', None) or ''
+        if not content:
+            content = f"[{message.content_type}]"
+        user = message.from_user
+        full_name = ((user.first_name or '') + ' ' + (user.last_name or '')).strip() or 'User'
+        username = f"@{user.username}" if user.username else "No Username"
+        edit_msg = (
+            f"✏️ <b>用户编辑了消息</b>\n"
+            f"用户: <a href='tg://user?id={user_id}'>{html.escape(full_name)}</a>\n"
+            f"用户名: <code>{html.escape(username)}</code>\n"
+            f"ID: <code>{user_id}</code>\n\n"
+            f"<b>编辑后内容:</b>\n{html.escape(content[:3500])}"
+        )
+        sent = safe_send(bot.send_message, ADMIN_ID, edit_msg, parse_mode='HTML')
+        if sent:
+            db_save_map(sent.message_id, user_id)
+    except Exception as e:
+        logging.warning(f"Edited message notify failed for {user_id}: {e}")
 
 @bot.message_handler(func=lambda m: m.chat.type == 'private' and m.from_user.id != ADMIN_ID, content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'sticker', 'animation', 'video_note', 'location', 'contact', 'dice'])
 def handle_incoming(message):
@@ -1399,7 +1730,7 @@ def handle_incoming(message):
 
     admin_sender.send(send_wrapper)
     
-    if not getattr(message, 'media_group_id', None):
+    if not getattr(message, 'media_group_id', None) and should_send_auto_reply(user_id):
         m = safe_send(bot.send_message, user_id, AUTO_REPLY_ZH if lang == 'zh' else AUTO_REPLY_EN)
         deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
 
@@ -1445,8 +1776,7 @@ def handle_admin_reply(message):
         elif message.content_type == 'location': safe_send(bot.send_location, target_uid, message.location.latitude, message.location.longitude)
         elif message.content_type == 'contact': safe_send(bot.send_contact, target_uid, phone_number=message.contact.phone_number, first_name=message.contact.first_name)
         elif message.content_type == 'dice': safe_send(bot.send_dice, target_uid, emoji=message.dice.emoji)
-        m = safe_reply_to(message, "✅ 已发送")
-        deleter.schedule(ADMIN_ID, m.message_id, 5)
+        logging.info(f"Admin reply sent to {target_uid}")
     except Exception as e:
         logging.exception(f"Admin reply failed for {target_uid}: {e}")
         try:
@@ -1462,6 +1792,7 @@ if __name__ == "__main__":
     threading.Thread(target=update_spam_rules, daemon=True).start()
     threading.Thread(target=cleanup_dict, daemon=True).start()
     logging.info("Bot Started.")
+    notify_admin_startup()
     while True:
         try: bot.infinity_polling(timeout=20, long_polling_timeout=10)
         except Exception as e:
