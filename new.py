@@ -1324,7 +1324,7 @@ def get_user_faq(user_id):
 def build_reply_menu(user_id, lang):
     try:
         placeholder = "选择菜单或直接发送消息" if lang == 'zh' else "Choose a menu item or send a message"
-        markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2, one_time_keyboard=False, is_persistent=True, input_field_placeholder=placeholder)
+        markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2, one_time_keyboard=False, input_field_placeholder=placeholder)
     except TypeError:
         markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2, one_time_keyboard=False)
     if user_id == ADMIN_ID:
