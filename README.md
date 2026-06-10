@@ -36,7 +36,6 @@ CodexBot 是一个可 Docker 部署的 Telegram 私聊客服与反垃圾机器�
 | `OWNER_ID` | 否 | 空 | 备用管理员 ID。`ADMIN_ID` 为空时才会用它。 |
 | `REDIS_ENABLED` | 否 | 轻量版填 `false` | 是否启用 Redis。你的 VPS 推荐 `false`，使用内存缓存即可。 |
 | `BOT_DB_PATH` | 否 | `/app/data/bot_core.db` | SQLite 数据库路径。Docker 轻量版不要改。 |
-| `CAPTCHA_TEXT_FALLBACK` | 否 | `false` | 是否允许用户用文本数字回答验证码。生产环境建议 `false`，只用按钮验证。 |
 | `REMOTE_SPAM_URL` | 否 | 空或默认规则地址 | 第三方广告规则 TXT 地址。留空时使用代码里的默认地址和内置兜底规则。 |
 | `WELCOME_ZH` | 否 | 代码默认中文欢迎语 | 自定义中文欢迎语。留空即可。 |
 | `VERIFIED_ZH` | 否 | 代码默认中文验证通过语 | 自定义中文验证通过提示。留空即可。 |
@@ -57,7 +56,6 @@ ADMIN_ID=你的Telegram数字ID
 OWNER_ID=
 REDIS_ENABLED=false
 BOT_DB_PATH=/app/data/bot_core.db
-CAPTCHA_TEXT_FALLBACK=false
 REMOTE_SPAM_URL=
 ```
 
@@ -72,7 +70,6 @@ ADMIN_ID=你的Telegram数字ID
 OWNER_ID=
 REDIS_ENABLED=false
 BOT_DB_PATH=/app/data/bot_core.db
-CAPTCHA_TEXT_FALLBACK=false
 REMOTE_SPAM_URL=
 EOF
 ```
@@ -115,19 +112,33 @@ EOF
 - 支持第三方广告规则 URL，启动和重载时会通知管理员加载状态。
 - 支持用户编辑消息检测，编辑成广告也会拦截。
 - 用户删除已发送消息后，已经转发到管理员侧的副本不会被删除。
+- 支持 Telegram 官方命令菜单和右侧聊天框按钮菜单；按钮菜单可手动隐藏，点击按钮后不会自动消失。
+- 菜单按管理员和普通用户分离，并支持中文 / 英文显示。
 
 ## 管理员菜单
 
-管理员发送 `/start` 或 `/help` 后，底部菜单应显示：
+管理员发送 `/start` 或 `/menu` 后，右侧聊天框按钮菜单应显示完整管理功能。这个菜单是 Telegram Reply Keyboard：可以手动隐藏，隐藏后可从输入框旁边的键盘按钮再次展开；点击菜单按钮后不会自动消失。
+
+中文管理员菜单：
 
 ```text
-📊 机器人状态
-🔄 重载广告规则
-🚫 封禁名单
-⚪ 白名单
-⚫ 黑名单
-❓ 常见问题
-🌐 切换语言
+📊 机器人状态    🔄 重载广告规则
+🚫 封禁名单      ⚪ 白名单        ⚫ 黑名单
+✅ 解除封禁      ➕ 加白名单      ➖ 移出白名单
+⛔ 加黑名单      ♻️ 移出黑名单
+🧹 清空验证      📣 群发广播      🧪 广告测试
+🆔 查看ID        ❓ 常见问题      🌐 切换语言
+```
+
+英文管理员菜单：
+
+```text
+📊 Bot Status       🔄 Reload Rules
+🚫 Ban List         ⚪ Whitelist       ⚫ Blacklist
+✅ Unban User       ➕ Add Whitelist   ➖ Remove Whitelist
+⛔ Add Blacklist    ♻️ Remove Blacklist
+🧹 Reset Verification   📣 Broadcast   🧪 Spam Test
+🆔 Show ID          ❓ FAQ             🌐 Change Language
 ```
 
 普通用户菜单只显示：
@@ -138,6 +149,15 @@ EOF
 🌐 切换语言
 ```
 
+英文普通用户菜单：
+
+```text
+📨 Contact Admin    ❓ FAQ
+🌐 Change Language
+```
+
+Telegram 官方 slash 命令菜单也会注册普通用户和管理员两套命令。注意：官方命令菜单的描述语言跟随 Telegram 客户端语言；右侧按钮菜单和机器人回复内容跟随用户在机器人里选择的语言。
+
 如果你是管理员但仍然看到普通用户菜单，优先检查两件事：
 
 1. `/id` 返回的 Telegram 数字 ID 是否和 VPS `/opt/codexbot/.env` 里的 `ADMIN_ID` 一致。
@@ -146,7 +166,7 @@ EOF
 检查容器代码是否为新版：
 
 ```bash
-docker exec codexbot sh -c "grep -n 'admin_menu_status\|重载广告规则\|封禁名单\|/reloadrules\|/status' /app/bot.py | head -30"
+docker exec codexbot sh -c "grep -n 'admin_menu_status\|admin_menu_resetverify\|Reset Verification\|one_time_keyboard=False\|/reloadrules\|/status' /app/bot.py | head -30"
 ```
 
 如果没有输出，说明 VPS 当前镜像还是旧代码，需要先让 GitHub Actions 构建最新镜像，再到 VPS 拉取。
@@ -167,6 +187,7 @@ docker exec codexbot sh -c "grep -n 'admin_menu_status\|重载广告规则\|封�
 /abl 用户ID
 /dbl 用户ID
 /unban 用户ID
+/resetverify
 /vlist wl
 /vlist bl
 /vlist ban
@@ -186,11 +207,14 @@ docker exec codexbot sh -c "grep -n 'admin_menu_status\|重载广告规则\|封�
 - `/status`：查看机器人、数据库、广告规则加载状态。
 - `/reloadrules`：手动重新拉取第三方广告规则。
 - `/spamtest 内容`：测试广告规则是否能命中，不会真的封禁用户。
+- `/resetverify`：一键清空普通用户验证状态，确认后他们下次发消息需要重新完成人机验证。
 - `/vlist wl`：查看白名单。
 - `/vlist bl`：查看黑名单。
 - `/vlist ban`：查看临时封禁名单，并支持按钮解封。
 - `/awl`：加入白名单，同时清理黑名单、临时封禁和验证状态冲突。
 - `/abl`：加入黑名单，同时清理白名单、临时封禁和验证状态冲突。
+
+右侧聊天框按钮菜单里的“解除封禁、加白名单、群发广播、广告测试”等按钮是快捷入口；点击后机器人会按当前语言提示你发送对应命令和参数。
 
 ## 广告拦截逻辑
 
@@ -243,7 +267,7 @@ docker pull ghcr.io/sykin7/codexbot:latest
 如果 VPS 拉取后功能还是旧的，用下面命令确认容器内代码：
 
 ```bash
-docker exec codexbot sh -c "grep -n 'admin_menu_status\|重载广告规则\|封禁名单\|/reloadrules\|/status' /app/bot.py | head -30"
+docker exec codexbot sh -c "grep -n 'admin_menu_status\|admin_menu_resetverify\|Reset Verification\|one_time_keyboard=False\|/reloadrules\|/status' /app/bot.py | head -30"
 ```
 
 ## 本地检查

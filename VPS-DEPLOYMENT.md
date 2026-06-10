@@ -73,7 +73,6 @@ ADMIN_ID=你的Telegram数字ID
 OWNER_ID=
 REDIS_ENABLED=false
 BOT_DB_PATH=/app/data/bot_core.db
-CAPTCHA_TEXT_FALLBACK=false
 REMOTE_SPAM_URL=
 EOF
 ```
@@ -92,7 +91,6 @@ ADMIN_ID=123456789
 OWNER_ID=
 REDIS_ENABLED=false
 BOT_DB_PATH=/app/data/bot_core.db
-CAPTCHA_TEXT_FALLBACK=false
 REMOTE_SPAM_URL=
 ```
 
@@ -103,7 +101,6 @@ REMOTE_SPAM_URL=
 - `OWNER_ID`：可以留空，已经设置 `ADMIN_ID` 即可。
 - `REDIS_ENABLED=false`：你的 VPS 推荐轻量单容器部署，不启用 Redis。
 - `BOT_DB_PATH=/app/data/bot_core.db`：容器内 SQLite 数据库路径，配合 `-v /opt/codexbot/data:/app/data` 使用，不要随便改。
-- `CAPTCHA_TEXT_FALLBACK=false`：默认使用按钮验证码。
 - `REMOTE_SPAM_URL`：可留空，留空时使用脚本内置和默认规则。
 
 ### .env 变量怎么改
@@ -117,7 +114,6 @@ REMOTE_SPAM_URL=
 | `OWNER_ID` | 通常不改 | 备用管理员 ID。已经填了 `ADMIN_ID` 就可以留空。 |
 | `REDIS_ENABLED` | 不建议改 | 你的轻量部署固定用 `false`。改成 `true` 但没有 Redis 容器会出问题。 |
 | `BOT_DB_PATH` | 不建议改 | 固定 `/app/data/bot_core.db`，数据实际落在 VPS 的 `/opt/codexbot/data`。 |
-| `CAPTCHA_TEXT_FALLBACK` | 不建议改 | 保持 `false`，用户只能点按钮验证，减少乱猜答案。 |
 | `REMOTE_SPAM_URL` | 可选 | 自定义第三方广告规则 TXT 地址。留空用默认规则。 |
 | `WELCOME_ZH` | 可选 | 自定义中文欢迎语。不填就用默认文案。 |
 | `VERIFIED_ZH` | 可选 | 自定义中文验证通过提示。不填就用默认文案。 |
@@ -137,7 +133,6 @@ ADMIN_ID=你的Telegram数字ID
 OWNER_ID=
 REDIS_ENABLED=false
 BOT_DB_PATH=/app/data/bot_core.db
-CAPTCHA_TEXT_FALLBACK=false
 REMOTE_SPAM_URL=
 EOF
 ```
@@ -151,7 +146,6 @@ ADMIN_ID=你的Telegram数字ID
 OWNER_ID=
 REDIS_ENABLED=false
 BOT_DB_PATH=/app/data/bot_core.db
-CAPTCHA_TEXT_FALLBACK=false
 REMOTE_SPAM_URL=
 WELCOME_ZH=👋 您好，请直接发送消息，管理员看到后会回复。
 VERIFIED_ZH=✅ 验证通过，可以发送消息了。
@@ -225,7 +219,7 @@ Rules Updated: 数量
 如果你发现机器人还是旧菜单、旧指令、管理员功能没有出现，马上执行：
 
 ```bash
-docker exec codexbot sh -c "grep -n 'admin_menu_status\|重载广告规则\|封禁名单\|/reloadrules\|/status' /app/bot.py | head -30"
+docker exec codexbot sh -c "grep -n 'admin_menu_status\|admin_menu_resetverify\|Reset Verification\|one_time_keyboard=False\|/reloadrules\|/status' /app/bot.py | head -30"
 ```
 
 如果没有任何输出，说明 VPS 当前镜像不是最新代码。原因通常是：本地代码还没推到 GitHub，或者 GitHub Actions 还没成功构建新镜像。
@@ -252,16 +246,28 @@ docker exec codexbot sh -c "grep -n 'admin_menu_status\|重载广告规则\|封�
 
 `/id` 返回的数字必须和 `/opt/codexbot/.env` 里的 `ADMIN_ID` 一致，否则你不会被识别为管理员。
 
-管理员底部菜单应显示：
+管理员右侧聊天框按钮菜单应显示完整管理功能。这个菜单可以手动隐藏，隐藏后可从输入框旁边的键盘按钮再次展开；点击菜单按钮后不会自动消失。
+
+中文管理员菜单：
 
 ```text
-📊 机器人状态
-🔄 重载广告规则
-🚫 封禁名单
-⚪ 白名单
-⚫ 黑名单
-❓ 常见问题
-🌐 切换语言
+📊 机器人状态    🔄 重载广告规则
+🚫 封禁名单      ⚪ 白名单        ⚫ 黑名单
+✅ 解除封禁      ➕ 加白名单      ➖ 移出白名单
+⛔ 加黑名单      ♻️ 移出黑名单
+🧹 清空验证      📣 群发广播      🧪 广告测试
+🆔 查看ID        ❓ 常见问题      🌐 切换语言
+```
+
+英文管理员菜单：
+
+```text
+📊 Bot Status       🔄 Reload Rules
+🚫 Ban List         ⚪ Whitelist       ⚫ Blacklist
+✅ Unban User       ➕ Add Whitelist   ➖ Remove Whitelist
+⛔ Add Blacklist    ♻️ Remove Blacklist
+🧹 Reset Verification   📣 Broadcast   🧪 Spam Test
+🆔 Show ID          ❓ FAQ             🌐 Change Language
 ```
 
 如果你还是看到普通用户菜单：
@@ -271,6 +277,16 @@ docker exec codexbot sh -c "grep -n 'admin_menu_status\|重载广告规则\|封�
 ❓ 常见问题
 🌐 切换语言
 ```
+
+英文普通用户菜单是：
+
+```text
+📨 Contact Admin
+❓ FAQ
+🌐 Change Language
+```
+
+Telegram 官方 slash 命令菜单也会注册普通用户和管理员两套命令。注意：官方命令菜单的描述语言跟随 Telegram 客户端语言；右侧按钮菜单和机器人回复内容跟随用户在机器人里选择的语言。
 
 按顺序检查：
 
@@ -294,6 +310,7 @@ docker exec codexbot sh -c "grep -n 'admin_menu_status\|重载广告规则\|封�
 /abl 用户ID
 /dbl 用户ID
 /unban 用户ID
+/resetverify
 /vlist wl
 /vlist bl
 /vlist ban
@@ -313,11 +330,14 @@ docker exec codexbot sh -c "grep -n 'admin_menu_status\|重载广告规则\|封�
 - `/status`：查看机器人、数据库和广告规则状态。
 - `/reloadrules`：手动重载第三方广告规则。
 - `/spamtest 内容`：测试广告规则是否会拦截，不会真的封禁。
+- `/resetverify`：一键清空普通用户验证状态，确认后他们下次发消息需要重新完成人机验证。
 - `/vlist ban`：查看临时封禁名单，并可按钮解封。
 - `/awl`：加入白名单。白名单会跳过广告和频率检测。
 - `/abl`：加入黑名单。黑名单用户消息会被拒收。
 - `/ban`：临时封禁回复消息对应的用户。
 - `/unban`：解封回复消息对应的用户，或 `/unban 用户ID`。
+
+右侧聊天框按钮菜单里的“解除封禁、加白名单、群发广播、广告测试”等按钮是快捷入口；点击后机器人会按当前语言提示你发送对应命令和参数。
 
 ## 9. 广告拦截确认
 
@@ -562,7 +582,7 @@ docker restart codexbot
 再检查容器代码：
 
 ```bash
-docker exec codexbot sh -c "grep -n 'admin_menu_status\|重载广告规则\|封禁名单\|/reloadrules\|/status' /app/bot.py | head -30"
+docker exec codexbot sh -c "grep -n 'admin_menu_status\|admin_menu_resetverify\|Reset Verification\|one_time_keyboard=False\|/reloadrules\|/status' /app/bot.py | head -30"
 ```
 
 如果没有输出，就是镜像旧，不是管理员权限问题。
@@ -617,7 +637,7 @@ free -h
 
 本地代码改完后：
 
-1. 确认只维护 `new.py`。
+1. 确认只维护 `new.py`，不要再恢复 `机器.py`。
 2. 本地执行 `python -m py_compile new.py`。
 3. 推送到 GitHub 的 `codex` 分支。
 4. 等 GitHub Actions 构建 `ghcr.io/sykin7/codexbot:latest` 成功。
