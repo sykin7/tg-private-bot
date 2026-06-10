@@ -1339,6 +1339,12 @@ def build_reply_menu(user_id, lang):
         markup.row(KeyboardButton(STRINGS['menu_lang'][lang]))
     return markup
 
+def menu_values(key):
+    return {STRINGS[key]['zh'], STRINGS[key]['en']}
+
+def is_user_menu_text(text):
+    return text in (menu_values('menu_contact') | menu_values('menu_help') | menu_values('menu_lang'))
+
 def build_default_commands(lang):
     if lang == 'en':
         return [
@@ -2068,12 +2074,19 @@ def handle_incoming(message):
     user_id = message.from_user.id
     db_touch_user(user_id)
     user_status = get_cached_user_status(user_id)
+    text = message.text or ''
+
     if user_status['bl']:
         try:
             m = safe_send(bot.send_message, user_id, get_text('blacklist_ban', user_id), parse_mode='HTML')
             deleter.schedule(user_id, message.message_id, 1)
             deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
         except Exception as e: logging.warning(f"Blacklist notice failed for {user_id}: {e}")
+        return
+
+    if message.content_type == 'text' and text in menu_values('menu_lang'):
+        ask_language(user_id, force=True)
+        deleter.schedule(user_id, message.message_id, MSG_AUTO_DELETE_DELAY)
         return
 
     is_whitelisted = user_status['wl']
@@ -2102,10 +2115,10 @@ def handle_incoming(message):
 
     lang = normalize_lang(user_status.get('lang'))
     if message.content_type == 'text':
-        if message.text in [STRINGS['menu_contact'][lang], STRINGS['menu_help'][lang], STRINGS['menu_lang'][lang]]:
-            if message.text == STRINGS['menu_lang'][lang]:
+        if is_user_menu_text(text):
+            if text in menu_values('menu_lang'):
                 ask_language(user_id, force=True)
-            elif message.text == STRINGS['menu_help'][lang]:
+            elif text in menu_values('menu_help'):
                 m = safe_send(bot.send_message, user_id, get_user_faq(user_id))
                 deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
             else:
