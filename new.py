@@ -373,6 +373,15 @@ STRINGS = {
     'admin_menu_ban_list': {'zh': "🚫 封禁名单", 'en': "🚫 Ban List"},
     'admin_menu_wl': {'zh': "⚪ 白名单", 'en': "⚪ Whitelist"},
     'admin_menu_bl': {'zh': "⚫ 黑名单", 'en': "⚫ Blacklist"},
+    'admin_menu_unban': {'zh': "✅ 解除封禁", 'en': "✅ Unban User"},
+    'admin_menu_awl': {'zh': "➕ 加白名单", 'en': "➕ Add Whitelist"},
+    'admin_menu_dwl': {'zh': "➖ 移出白名单", 'en': "➖ Remove Whitelist"},
+    'admin_menu_abl': {'zh': "⛔ 加黑名单", 'en': "⛔ Add Blacklist"},
+    'admin_menu_dbl': {'zh': "♻️ 移出黑名单", 'en': "♻️ Remove Blacklist"},
+    'admin_menu_resetverify': {'zh': "🧹 清空验证", 'en': "🧹 Reset Verification"},
+    'admin_menu_broadcast': {'zh': "📣 群发广播", 'en': "📣 Broadcast"},
+    'admin_menu_spamtest': {'zh': "🧪 广告测试", 'en': "🧪 Spam Test"},
+    'admin_menu_id': {'zh': "🆔 查看ID", 'en': "🆔 Show ID"},
     'blacklist_ban': {'zh': "🚫 <b>您已被管理员列入黑名单，所有消息将被忽略。</b>", 'en': "🚫 <b>You have been blacklisted by the admin.</b>"},
     'file_too_large': {'zh': "⚠️ 文件过大 (超过50MB)，无法发送。", 'en': "⚠️ File too large (over 50MB)."}
 }
@@ -1297,14 +1306,17 @@ def get_text(key, user_id, **kwargs):
     if kwargs: return txt.format(**kwargs)
     return txt
 
+def get_user_lang(user_id):
+    return normalize_lang(get_cached_user_status(user_id).get('lang'))
+
 def get_menu_text(user_id):
-    lang = normalize_lang(get_cached_user_status(user_id).get('lang'))
+    lang = get_user_lang(user_id)
     if user_id == ADMIN_ID:
         return "管理菜单已打开，请选择操作。" if lang == 'zh' else "Admin menu is open. Choose an action."
     return "菜单已打开，请选择功能或直接发送消息。" if lang == 'zh' else "Menu is open. Choose an option or send a message directly."
 
 def get_user_faq(user_id):
-    lang = normalize_lang(get_cached_user_status(user_id).get('lang'))
+    lang = get_user_lang(user_id)
     if lang == 'zh':
         return "💡 常见问题\n1. 验证通过后，可以直接发送消息给管理员。\n2. 违规、广告、刷屏内容会被自动拦截。\n3. 如需重新选择语言，请点击菜单里的“切换语言”。"
     return "💡 FAQ\n1. After verification, send a message directly to contact the admin.\n2. Spam, ads, and flooding are blocked automatically.\n3. To change language, tap Change Language in the menu."
@@ -1316,26 +1328,49 @@ def build_reply_menu(user_id, lang):
     except TypeError:
         markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2, one_time_keyboard=False)
     if user_id == ADMIN_ID:
-        markup.row(KeyboardButton('/status'), KeyboardButton('/reloadrules'))
-        markup.row(KeyboardButton('/vlist ban'), KeyboardButton('/vlist wl'), KeyboardButton('/vlist bl'))
-        markup.row(KeyboardButton('/unban'), KeyboardButton('/awl'), KeyboardButton('/dwl'))
-        markup.row(KeyboardButton('/abl'), KeyboardButton('/dbl'))
-        markup.row(KeyboardButton('/resetverify'), KeyboardButton('/gb'), KeyboardButton('/spamtest'))
-        markup.row(KeyboardButton('/id'), KeyboardButton('/help'), KeyboardButton('/menu'))
-        markup.row(KeyboardButton(STRINGS['menu_lang'][lang]))
+        markup.row(KeyboardButton(STRINGS['admin_menu_status'][lang]), KeyboardButton(STRINGS['admin_menu_reload_rules'][lang]))
+        markup.row(KeyboardButton(STRINGS['admin_menu_ban_list'][lang]), KeyboardButton(STRINGS['admin_menu_wl'][lang]), KeyboardButton(STRINGS['admin_menu_bl'][lang]))
+        markup.row(KeyboardButton(STRINGS['admin_menu_unban'][lang]), KeyboardButton(STRINGS['admin_menu_awl'][lang]), KeyboardButton(STRINGS['admin_menu_dwl'][lang]))
+        markup.row(KeyboardButton(STRINGS['admin_menu_abl'][lang]), KeyboardButton(STRINGS['admin_menu_dbl'][lang]))
+        markup.row(KeyboardButton(STRINGS['admin_menu_resetverify'][lang]), KeyboardButton(STRINGS['admin_menu_broadcast'][lang]), KeyboardButton(STRINGS['admin_menu_spamtest'][lang]))
+        markup.row(KeyboardButton(STRINGS['admin_menu_id'][lang]), KeyboardButton(STRINGS['menu_help'][lang]), KeyboardButton(STRINGS['menu_lang'][lang]))
     else:
         markup.row(KeyboardButton(STRINGS['menu_contact'][lang]), KeyboardButton(STRINGS['menu_help'][lang]))
         markup.row(KeyboardButton(STRINGS['menu_lang'][lang]))
     return markup
 
-def setup_bot_menus():
-    default_commands = [
-        BotCommand('start', '打开菜单 / Open menu'),
-        BotCommand('menu', '打开菜单 / Open menu'),
-        BotCommand('help', '帮助 / Help'),
-        BotCommand('id', '查看 Telegram ID / Show Telegram ID'),
+def build_default_commands(lang):
+    if lang == 'en':
+        return [
+            BotCommand('start', 'Open menu'),
+            BotCommand('menu', 'Open menu'),
+            BotCommand('help', 'Help'),
+            BotCommand('id', 'Show Telegram ID'),
+        ]
+    return [
+        BotCommand('start', '打开菜单'),
+        BotCommand('menu', '打开菜单'),
+        BotCommand('help', '帮助'),
+        BotCommand('id', '查看 Telegram ID'),
     ]
-    admin_commands = default_commands + [
+
+def build_admin_commands(lang):
+    commands = build_default_commands(lang)
+    if lang == 'en':
+        return commands + [
+            BotCommand('status', 'Bot status'),
+            BotCommand('reloadrules', 'Reload spam rules'),
+            BotCommand('vlist', 'View list: /vlist wl|bl|ban'),
+            BotCommand('unban', 'Unban user: /unban ID'),
+            BotCommand('awl', 'Add whitelist: /awl ID'),
+            BotCommand('dwl', 'Remove whitelist: /dwl ID'),
+            BotCommand('abl', 'Add blacklist: /abl ID'),
+            BotCommand('dbl', 'Remove blacklist: /dbl ID'),
+            BotCommand('resetverify', 'Reset verification for all users'),
+            BotCommand('gb', 'Broadcast: /gb text'),
+            BotCommand('spamtest', 'Test spam rules: /spamtest text'),
+        ]
+    return commands + [
         BotCommand('status', '机器人状态'),
         BotCommand('reloadrules', '重载广告规则'),
         BotCommand('vlist', '查看名单: /vlist wl|bl|ban'),
@@ -1348,10 +1383,16 @@ def setup_bot_menus():
         BotCommand('gb', '广播: /gb 内容'),
         BotCommand('spamtest', '测试广告规则: /spamtest 内容'),
     ]
+
+def setup_bot_menus():
     try:
-        safe_send(bot.set_my_commands, default_commands, scope=BotCommandScopeDefault())
+        safe_send(bot.set_my_commands, build_default_commands('zh'), scope=BotCommandScopeDefault(), language_code='zh')
+        safe_send(bot.set_my_commands, build_default_commands('en'), scope=BotCommandScopeDefault(), language_code='en')
+        safe_send(bot.set_my_commands, build_default_commands('zh'), scope=BotCommandScopeDefault())
         if ADMIN_ID is not None:
-            safe_send(bot.set_my_commands, admin_commands, scope=BotCommandScopeChat(ADMIN_ID))
+            safe_send(bot.set_my_commands, build_admin_commands('zh'), scope=BotCommandScopeChat(ADMIN_ID), language_code='zh')
+            safe_send(bot.set_my_commands, build_admin_commands('en'), scope=BotCommandScopeChat(ADMIN_ID), language_code='en')
+            safe_send(bot.set_my_commands, build_admin_commands('zh'), scope=BotCommandScopeChat(ADMIN_ID))
             safe_send(bot.set_chat_menu_button, chat_id=ADMIN_ID, menu_button=MenuButtonCommands())
         safe_send(bot.set_chat_menu_button, menu_button=MenuButtonCommands())
         logging.info("Telegram command menus configured.")
@@ -1508,6 +1549,56 @@ def admin_usage(message, text):
     if m:
         deleter.schedule(ADMIN_ID, m.message_id, 15)
 
+def send_admin_menu_hint(message, command):
+    lang = get_user_lang(message.from_user.id)
+    examples = {
+        'zh': {
+            '/unban': '/unban 用户ID',
+            '/awl': '/awl 用户ID',
+            '/dwl': '/dwl 用户ID',
+            '/abl': '/abl 用户ID',
+            '/dbl': '/dbl 用户ID',
+            '/gb': '/gb 广播内容',
+            '/spamtest': '/spamtest 要测试的内容',
+        },
+        'en': {
+            '/unban': '/unban user_id',
+            '/awl': '/awl user_id',
+            '/dwl': '/dwl user_id',
+            '/abl': '/abl user_id',
+            '/dbl': '/dbl user_id',
+            '/gb': '/gb broadcast text',
+            '/spamtest': '/spamtest text to test',
+        },
+    }
+    example = examples[lang].get(command, command)
+    if lang == 'en':
+        text = f"Send directly: <code>{html.escape(example)}</code>"
+        if command in ('/awl', '/dwl', '/abl', '/dbl', '/unban'):
+            text += "\nYou can also reply to a forwarded user message and send this command."
+    else:
+        text = f"请直接发送：<code>{html.escape(example)}</code>"
+        if command in ('/awl', '/dwl', '/abl', '/dbl', '/unban'):
+            text += "\n也可以回复用户消息后发送对应命令。"
+    admin_usage(message, text)
+
+def send_reset_verify_prompt(message):
+    lang = get_user_lang(message.from_user.id)
+    if lang == 'en':
+        confirm_text = "Confirm Reset"
+        cancel_text = "Cancel"
+        prompt = "⚠️ Reset verification status for all normal users?\nAfter confirmation, verified users must complete CAPTCHA again before sending messages."
+    else:
+        confirm_text = "确认清空"
+        cancel_text = "取消"
+        prompt = "⚠️ 确认清空所有普通用户的验证状态？\n确认后，已验证用户下次发消息需要重新完成人机验证。"
+    markup = InlineKeyboardMarkup()
+    markup.row(
+        InlineKeyboardButton(confirm_text, callback_data="resetverify:confirm"),
+        InlineKeyboardButton(cancel_text, callback_data="resetverify:cancel")
+    )
+    safe_reply_to(message, prompt, reply_markup=markup)
+
 def send_admin_status(message):
     db_type = 'PostgreSQL' if db_is_postgres() else 'SQLite'
     redis_state = '启用' if get_redis_client() else '未启用'
@@ -1615,14 +1706,17 @@ def notify_admin_remote_rules_loaded(remote_count, compiled_count):
 @bot.message_handler(commands=['id'])
 def handle_id_command(message):
     if message.chat.type != 'private': return
-    safe_reply_to(message, f"🆔 你的 Telegram 数字 ID 是：<code>{message.from_user.id}</code>", parse_mode='HTML')
+    lang = get_user_lang(message.from_user.id)
+    text = f"🆔 Your Telegram numeric ID is: <code>{message.from_user.id}</code>" if lang == 'en' else f"🆔 你的 Telegram 数字 ID 是：<code>{message.from_user.id}</code>"
+    safe_reply_to(message, text, parse_mode='HTML')
 
 @bot.message_handler(commands=['spamtest'])
 def handle_spamtest_command(message):
     if message.from_user.id != ADMIN_ID: return
+    lang = get_user_lang(message.from_user.id)
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
-        admin_usage(message, "用法：<code>/spamtest 要测试的内容</code>")
+        admin_usage(message, "Usage: <code>/spamtest text to test</code>" if lang == 'en' else "用法：<code>/spamtest 要测试的内容</code>")
         return
     sample = parts[1].strip()
     blocked, score, compact, reason = explain_spam_text(sample)
@@ -1648,45 +1742,43 @@ def handle_reload_rules_command(message):
 @bot.message_handler(commands=['resetverify'])
 def handle_reset_verify_command(message):
     if message.from_user.id != ADMIN_ID: return
-    markup = InlineKeyboardMarkup()
-    markup.row(
-        InlineKeyboardButton("确认清空", callback_data="resetverify:confirm"),
-        InlineKeyboardButton("取消", callback_data="resetverify:cancel")
-    )
-    safe_reply_to(message, "⚠️ 确认清空所有普通用户的验证状态？\n确认后，已验证用户下次发消息需要重新完成人机验证。", reply_markup=markup)
+    send_reset_verify_prompt(message)
 
 @bot.message_handler(commands=['unban'])
 def handle_unban_command(message):
     if message.from_user.id != ADMIN_ID: return
+    lang = get_user_lang(message.from_user.id)
     parts = message.text.split()
     target_uid = None
     if len(parts) >= 2:
         try: target_uid = int(parts[1].strip())
         except:
-            admin_usage(message, "ID 必须是纯数字，例如：<code>/unban 123456789</code>")
+            admin_usage(message, "ID must be numeric, for example: <code>/unban 123456789</code>" if lang == 'en' else "ID 必须是纯数字，例如：<code>/unban 123456789</code>")
             return
     else:
         target_uid = admin_reply_target(message)
     if not target_uid:
-        admin_usage(message, "用法：<code>/unban 用户ID</code>，或回复用户转发消息发送 <code>/unban</code>")
+        admin_usage(message, "Usage: <code>/unban user_id</code>, or reply to a forwarded user message with <code>/unban</code>" if lang == 'en' else "用法：<code>/unban 用户ID</code>，或回复用户转发消息发送 <code>/unban</code>")
         return
     db_unban_user(target_uid)
-    safe_reply_to(message, f"✅ ID {target_uid} 已解除临时封禁。")
+    safe_reply_to(message, f"✅ ID {target_uid} has been unbanned." if lang == 'en' else f"✅ ID {target_uid} 已解除临时封禁。")
 
 @bot.message_handler(commands=['gb'])
 def handle_broadcast_command(message):
     if message.from_user.id != ADMIN_ID: return
+    lang = get_user_lang(message.from_user.id)
     parts = message.text.split(maxsplit=1)
     msg_text = parts[1].strip() if len(parts) > 1 else ''
     if not msg_text:
-        admin_usage(message, "用法：<code>/gb 要广播的内容</code>")
+        admin_usage(message, "Usage: <code>/gb broadcast text</code>" if lang == 'en' else "用法：<code>/gb 要广播的内容</code>")
         return
-    safe_reply_to(message, "🚀 广播开始...")
+    safe_reply_to(message, "🚀 Broadcast started..." if lang == 'en' else "🚀 广播开始...")
     threading.Thread(target=broadcast_thread, args=(msg_text,), daemon=True).start()
 
 @bot.message_handler(commands=['awl', 'dwl', 'abl', 'dbl', 'vlist'])
 def handle_list_commands(message):
     if message.from_user.id != ADMIN_ID: return
+    lang = get_user_lang(message.from_user.id)
     cmd = message.text.split()[0].split('@', 1)[0].lower().replace('/', '')
     parts = message.text.split()
     if cmd in ['awl', 'dwl', 'abl', 'dbl']:
@@ -1694,15 +1786,15 @@ def handle_list_commands(message):
         if len(parts) >= 2:
             try: target_uid = int(parts[1].strip())
             except:
-                admin_usage(message, "ID 必须是纯数字，例如：<code>/awl 123456789</code>")
+                admin_usage(message, "ID must be numeric, for example: <code>/awl 123456789</code>" if lang == 'en' else "ID 必须是纯数字，例如：<code>/awl 123456789</code>")
                 return
         elif cmd in ['awl', 'abl']:
             target_uid = admin_reply_target(message)
         if not target_uid:
             if cmd in ['awl', 'abl']:
-                admin_usage(message, f"用法：<code>/{cmd} 用户ID</code>，或回复用户转发消息发送 <code>/{cmd}</code>")
+                admin_usage(message, f"Usage: <code>/{cmd} user_id</code>, or reply to a forwarded user message with <code>/{cmd}</code>" if lang == 'en' else f"用法：<code>/{cmd} 用户ID</code>，或回复用户转发消息发送 <code>/{cmd}</code>")
             else:
-                admin_usage(message, f"用法：<code>/{cmd} 用户ID</code>")
+                admin_usage(message, f"Usage: <code>/{cmd} user_id</code>" if lang == 'en' else f"用法：<code>/{cmd} 用户ID</code>")
             return
         list_name = 'whitelist' if cmd.endswith('wl') else 'blacklist'
         if cmd.startswith('a'):
@@ -1714,7 +1806,7 @@ def handle_list_commands(message):
     elif cmd == 'vlist':
         list_arg = parts[1].lower() if len(parts) > 1 else ''
         if list_arg not in ['wl', 'bl', 'ban']:
-            admin_usage(message, "用法：<code>/vlist wl</code> 查看白名单，<code>/vlist bl</code> 查看黑名单，<code>/vlist ban</code> 查看临时封禁名单")
+            admin_usage(message, "Usage: <code>/vlist wl</code> for whitelist, <code>/vlist bl</code> for blacklist, <code>/vlist ban</code> for temporary bans" if lang == 'en' else "用法：<code>/vlist wl</code> 查看白名单，<code>/vlist bl</code> 查看黑名单，<code>/vlist ban</code> 查看临时封禁名单")
             return
         send_admin_list(message, list_arg)
 
@@ -1799,16 +1891,22 @@ def handle_reset_verify_callback(call):
         try: safe_send(bot.answer_callback_query, call.id, "Only admin")
         except Exception as e: logging.warning(f"Reset verify non-admin answer failed: {e}")
         return
+    lang = get_user_lang(call.from_user.id)
     action = call.data.split(':', 1)[1]
     try:
         if action == 'confirm':
             changed = db_reset_all_verifications()
-            text = f"✅ 已清空验证状态。\n受影响用户数: <code>{changed}</code>\n普通用户下次发消息会重新进入验证流程。"
-            safe_send(bot.answer_callback_query, call.id, "已清空")
+            if lang == 'en':
+                text = f"✅ Verification status reset.\nAffected users: <code>{changed}</code>\nNormal users will need to complete CAPTCHA again before sending messages."
+                answer = "Reset done"
+            else:
+                text = f"✅ 已清空验证状态。\n受影响用户数: <code>{changed}</code>\n普通用户下次发消息会重新进入验证流程。"
+                answer = "已清空"
+            safe_send(bot.answer_callback_query, call.id, answer)
             safe_send(bot.edit_message_text, text, call.message.chat.id, call.message.message_id, parse_mode='HTML', reply_markup=None)
         else:
-            safe_send(bot.answer_callback_query, call.id, "已取消")
-            safe_send(bot.edit_message_text, "已取消清空验证状态。", call.message.chat.id, call.message.message_id, reply_markup=None)
+            safe_send(bot.answer_callback_query, call.id, "Canceled" if lang == 'en' else "已取消")
+            safe_send(bot.edit_message_text, "Verification reset canceled." if lang == 'en' else "已取消清空验证状态。", call.message.chat.id, call.message.message_id, reply_markup=None)
     except Exception as e:
         logging.warning(f"Reset verify callback failed: {e}")
 
@@ -1876,6 +1974,15 @@ def handle_admin_menu(message):
     admin_ban_values = {STRINGS['admin_menu_ban_list']['zh'], STRINGS['admin_menu_ban_list']['en']}
     admin_wl_values = {STRINGS['admin_menu_wl']['zh'], STRINGS['admin_menu_wl']['en']}
     admin_bl_values = {STRINGS['admin_menu_bl']['zh'], STRINGS['admin_menu_bl']['en']}
+    admin_unban_values = {STRINGS['admin_menu_unban']['zh'], STRINGS['admin_menu_unban']['en']}
+    admin_awl_values = {STRINGS['admin_menu_awl']['zh'], STRINGS['admin_menu_awl']['en']}
+    admin_dwl_values = {STRINGS['admin_menu_dwl']['zh'], STRINGS['admin_menu_dwl']['en']}
+    admin_abl_values = {STRINGS['admin_menu_abl']['zh'], STRINGS['admin_menu_abl']['en']}
+    admin_dbl_values = {STRINGS['admin_menu_dbl']['zh'], STRINGS['admin_menu_dbl']['en']}
+    admin_resetverify_values = {STRINGS['admin_menu_resetverify']['zh'], STRINGS['admin_menu_resetverify']['en']}
+    admin_broadcast_values = {STRINGS['admin_menu_broadcast']['zh'], STRINGS['admin_menu_broadcast']['en']}
+    admin_spamtest_values = {STRINGS['admin_menu_spamtest']['zh'], STRINGS['admin_menu_spamtest']['en']}
+    admin_id_values = {STRINGS['admin_menu_id']['zh'], STRINGS['admin_menu_id']['en']}
     if text in menu_lang_values:
         ask_language(user_id, force=True)
     elif text in admin_status_values:
@@ -1888,6 +1995,25 @@ def handle_admin_menu(message):
         send_admin_list(message, 'wl')
     elif text in admin_bl_values:
         send_admin_list(message, 'bl')
+    elif text in admin_unban_values:
+        send_admin_menu_hint(message, '/unban')
+    elif text in admin_awl_values:
+        send_admin_menu_hint(message, '/awl')
+    elif text in admin_dwl_values:
+        send_admin_menu_hint(message, '/dwl')
+    elif text in admin_abl_values:
+        send_admin_menu_hint(message, '/abl')
+    elif text in admin_dbl_values:
+        send_admin_menu_hint(message, '/dbl')
+    elif text in admin_resetverify_values:
+        send_reset_verify_prompt(message)
+    elif text in admin_broadcast_values:
+        send_admin_menu_hint(message, '/gb')
+    elif text in admin_spamtest_values:
+        send_admin_menu_hint(message, '/spamtest')
+    elif text in admin_id_values:
+        id_text = f"🆔 Your Telegram numeric ID is: <code>{user_id}</code>" if lang == 'en' else f"🆔 你的 Telegram 数字 ID 是：<code>{user_id}</code>"
+        safe_reply_to(message, id_text, parse_mode='HTML')
     elif text in menu_help_values:
         m = send_long_message(user_id, get_help_message(True, user_id), parse_mode='HTML')
         deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
@@ -1984,16 +2110,6 @@ def handle_incoming(message):
                 deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
             else:
                 send_menu(user_id, get_menu_text(user_id))
-            deleter.schedule(user_id, message.message_id, MSG_AUTO_DELETE_DELAY)
-            return
-        if message.text in [STRINGS['menu_contact'][lang], STRINGS['menu_help'][lang], STRINGS['menu_lang'][lang]]:
-            if message.text == STRINGS['menu_lang'][lang]: ask_language(user_id, force=True)
-            elif message.text == STRINGS['menu_help'][lang]: 
-                m = safe_send(bot.send_message, user_id, "💡 FAQ / 常见问题:\n1. 消息直接发送。\n2. 违规自动封禁。")
-                deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
-            else: 
-                m = safe_send(bot.send_message, user_id, WELCOME_ZH if lang == 'zh' else WELCOME_EN)
-                deleter.schedule(user_id, m.message_id, MSG_AUTO_DELETE_DELAY)
             deleter.schedule(user_id, message.message_id, MSG_AUTO_DELETE_DELAY)
             return
 
