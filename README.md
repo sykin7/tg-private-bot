@@ -13,20 +13,21 @@
 
 | 你的情况 | 看哪份文档 |
 |---------|----------|
-| **不想装任何软件，全程网页操作** | [DEPLOY-WEB.md](./DEPLOY-WEB.md) ⭐ 推荐 |
+| **完全小白，想用大白话看懂** | [DEPLOY-EASY.md](./DEPLOY-EASY.md) ⭐⭐⭐ 最推荐 |
+| **不想装软件，全程网页操作** | [DEPLOY-WEB.md](./DEPLOY-WEB.md) |
 | 熟悉命令行，想用 wrangler | [DEPLOY.md](./DEPLOY.md) |
-| 想了解所有细节 | 两份都看 |
 
-### ⚠️ 关于部署方式的说明
+### 关于部署方式的说明
 
 这个项目是 **Cloudflare Workers** 项目（不是 Pages），所以：
 
-- ❌ **不能**像 Pages 那样直接上传 ZIP 文件
-- ✅ **可以**连接 GitHub 仓库自动部署（最简单，全程网页操作）
-- ✅ **可以**用 wrangler 命令行部署
-- ✅ **可以**在 Dashboard 编辑器手动粘贴代码（不推荐，15 个文件）
+- ❌ **不能**像 Pages 那样直接上传 ZIP 文件（Workers 需要构建，Pages 是静态文件）
+- ✅ **最简单**：把代码传到 GitHub → Cloudflare 连接仓库 → 在网页上填密钥 → 完成
+- ✅ **也可以**用 wrangler 命令行部署
 
-**最简单的方式**：把代码传到 GitHub → Cloudflare 连接仓库 → 在网页上添加 KV/Secrets → 完成。详见 [DEPLOY-WEB.md](./DEPLOY-WEB.md)。
+**为什么还要注册 webhook？** 这是 Telegram 的规则——任何 Telegram bot 都要告诉 Telegram"消息往哪发"。这一步就一次操作，复制一条命令的事，不是 Cloudflare 的额外要求。
+
+**最简单的方式**：看 [DEPLOY-EASY.md](./DEPLOY-EASY.md)，大白话讲解，20-30 分钟搞定。
 
 快速部署（如果你已熟悉 Cloudflare）：
 
