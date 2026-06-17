@@ -1,0 +1,80 @@
+{
+  // Cloudflare Workers config for nicechat-bot (security-hardened fork).
+  // Docs: https://developers.cloudflare.com/workers/wrangler/configuration/
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "nicechat-bot",
+  "main": "src/index.ts",
+  "compatibility_date": "2024-09-23",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Workers AI binding (fallback / backup AI provider). No extra resource needed.
+  "ai": { "binding": "AI" },
+
+  // FIX B31: enable Workers Logs for observability (free tier: 200k logs/day)
+  "observability": {
+    "enabled": true
+  },
+
+  // KV namespace. Replace "id" with the id printed by: npm run kv:create
+  "kv_namespaces": [
+    { "binding": "TG_BOT_KV", "id": "REPLACE_WITH_YOUR_KV_ID" }
+  ],
+
+  // SECURITY FIX (C1): ADMIN_UID and AI_BASE_URL removed from public vars.
+  // They must now be set as Secrets:
+  //   wrangler secret put ADMIN_UID
+  //   wrangler secret put AI_BASE_URL
+  // Same for BOT_TOKEN / BOT_SECRET / AI_API_KEY / SEARCH_API_KEY.
+  //
+  // The remaining vars below are non-sensitive configuration only.
+  "vars": {
+    "RELAY_MODE": "private",
+    "ADMIN_GROUP_ID": "",
+
+    "AI_MODEL": "gpt-4o-mini",
+    // FIX P31: CF Workers free tier caps ctx.waitUntil at ~30s wall-clock.
+    // 25s leaves room for fallback / cleanup. For paid tier, can raise to 60s.
+    "AI_TIMEOUT_MS": "25000",
+    "AI_CLASSIFY_TIMEOUT_MS": "10000",
+    "AI_PROVIDER": "relay",
+    "AI_FALLBACK_TO_CF": "true",
+    "CF_AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+
+    "FILTER_ENABLED": "true",
+    "FILTER_THRESHOLD": "0.75",
+    "BLOCK_KEYWORDS": "",
+
+    "VERIFY_MODE": "math",
+    "VERIFY_QUESTION": "",
+    "VERIFY_ANSWER": "",
+
+    "WELCOME_MESSAGE": "你好，这是主人的私人助手。为了挡住广告机器人，请先回答一道简单的算术题完成验证。",
+    "AUTO_GREETING": "你好！你的消息已经收到并转达给主人，请稍等回复。",
+    "AI_REPLY_PREVIEW": "preview",
+    "AI_CONTEXT_ROUNDS": "6",
+
+    "AUTO_BAN_THRESHOLD": "3",
+    "BAN_MESSAGE": "你已因多次发送广告或骚扰信息被系统封禁。如需申诉，请发送 /appeal <申诉说明>。",
+    "APPEAL_MAX_ATTEMPTS": "2",
+    "APPEAL_MESSAGE": "申诉已收到，管理员会视情况处理。请勿重复发送无关内容。",
+
+    "AUTO_SEARCH_ENABLED": "true",
+    "SEARCH_PROVIDER": "brave",
+    "SEARCH_MAX_RESULTS": "5",
+    "SEARCH_DECISION_MODEL": "",
+
+    "BOT_USERNAME": "",
+    "GROUP_AI_ENABLED": "false",
+    "GROUP_AI_MAX_CONCURRENCY": "1",
+    "GROUP_AI_LOCK_TTL_SECONDS": "120",
+    "GROUP_USER_COOLDOWN_SECONDS": "30",
+    "GROUP_AI_CONTEXT_ROUNDS": "4",
+    "GROUP_AI_MAX_INPUT_CHARS": "1200",
+    "GROUP_AI_MAX_OUTPUT_CHARS": "1800",
+
+    // Dev only: set to "1" to bypass Telegram ASN check (e.g. for local wrangler dev)
+    "BYPASS_TG_ASN_CHECK": "",
+    // FIX B21: optional override for webhook URL (use ngrok / cloudflared tunnel for local dev)
+    "WEBHOOK_URL_OVERRIDE": ""
+  }
+}

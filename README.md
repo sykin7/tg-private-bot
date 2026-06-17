@@ -1,131 +1,168 @@
+# nicechat-bot (安全加固版)
 
-# 🛡️ Telegram 私聊转发与主动防御机器人
+部署在 Cloudflare Workers 上的 Telegram 个人双向聊天机器人。这是 [TyrEamon/nicechat-bot](https://github.com/TyrEamon/nicechat-bot) 的安全加固 fork，**100% 保留 Cloudflare 原生架构**（Workers + KV + Workers AI），通过纯代码层修复堵住原版的全部 Critical / High / Medium / Low 级问题。
 
-[![Version](https://img.shields.io/badge/Version-V39.2%20Persistent%20Core-crimson)](https://github.com/yourusername/yourrepository)
-[![Python](https://img.shields.io/badge/Python-3.8%2B-blue)](https://www.python.org/)
-[![Database](https://img.shields.io/badge/Database-SQLite3%20(WAL)-lightgrey)](https://www.sqlite.org/index.html)
-[![Docker](https://img.shields.io/badge/Docker-Supported-2496ED?logo=docker)](https://www.docker.com/)
-[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+## 改造原则
 
-这是一个专为高安全性需求设计的 Telegram 私聊转发机器人。它不仅仅是一个简单的转发器，更是一个集成了**企业级持久化存储**、**高强度人机验证**和**动态反垃圾网络**的主动防御系统。
+- ✅ **不脱离 Cloudflare 生态**：仍然是 Workers + KV + Workers AI 三件套
+- ✅ **零额外服务**：不引入 Redis / PostgreSQL / VPS
+- ✅ **免费层可用**：所有修复都在 Workers 免费套餐内可运行
+- ✅ **代码层修复为主**：利用 KV list 操作实现近似原子计数，规避最终一致性竞态
 
-引入了“不死鸟”轮询机制和自动数据目录创建功能，显著提升了在容器环境（如 Docker, Leaflow, Zeabur）下的稳定性。
+## 📖 部署文档
 
-个人使用可以不挂载存储直接使用又快又猛，只是没有黑名单记录而已。客服使用最好是挂个存储！
+| 你的情况 | 看哪份文档 |
+|---------|----------|
+| **不想装任何软件，全程网页操作** | [DEPLOY-WEB.md](./DEPLOY-WEB.md) ⭐ 推荐 |
+| 熟悉命令行，想用 wrangler | [DEPLOY.md](./DEPLOY.md) |
+| 想了解所有细节 | 两份都看 |
 
-## ✨ 核心功能亮点
+### ⚠️ 关于部署方式的说明
 
-### 🧠 智能人机验证 (Anti-OCR Captcha)
+这个项目是 **Cloudflare Workers** 项目（不是 Pages），所以：
 
-  * **混合干扰抗对抗**：采用“中文数字 + 阿拉伯数字 + 运算符 + 零宽隐形字符”混合生成算术题，有效抵御常规 OCR 脚本的自动识别。
-  * **动态惩罚机制**：新用户需在 120秒 内完成验证。超时或 3次错误尝试后，将触发随机时长的临时封禁（10\~60分钟）。
+- ❌ **不能**像 Pages 那样直接上传 ZIP 文件
+- ✅ **可以**连接 GitHub 仓库自动部署（最简单，全程网页操作）
+- ✅ **可以**用 wrangler 命令行部署
+- ✅ **可以**在 Dashboard 编辑器手动粘贴代码（不推荐，15 个文件）
 
-### 💾 数据持久化与高可用 (SQLite WAL)
+**最简单的方式**：把代码传到 GitHub → Cloudflare 连接仓库 → 在网页上添加 KV/Secrets → 完成。详见 [DEPLOY-WEB.md](./DEPLOY-WEB.md)。
 
-  * **状态永不丢失**：所有用户验证状态、封禁记录和消息映射关系均实时写入本地 SQLite 数据库。
-  * **容器友好**：支持通过环境变量自定义数据库路径，配合 Docker 挂载卷，即使容器重建或服务器重启，机器人记忆依然在。
-  * **高并发读写**：启用 SQLite WAL (Write-Ahead Logging) 模式和线程锁，确保多用户同时操作时的数据一致性和高性能。
+快速部署（如果你已熟悉 Cloudflare）：
 
-### 🛡️ 多重防御体系
+```bash
+# 1. 解压项目，进入目录
+cd nicechat-fixed
 
-  * **动态反垃圾 (Anti-Spam)**：内置基础词库，并**每小时自动从远程 URL（如 GitHub）同步最新规则**。支持复杂的正则表达式匹配和文本标准化处理。
-  * **洪水控制 (Anti-Flood)**：内置频率限制器，检测瞬时高频请求。违规者将自动暂停服务 60秒。
-  * **深度内容检测**：不仅检测消息内容，还会自动扫描发送者的**昵称**、**文件名**是否包含违规推广词。
+# 2. 安装依赖
+npm install
 
-### 📨 双向无缝转发与广播
+# 3. 登录 Cloudflare
+npx wrangler login
 
-  * **管理员视角**：接收用户消息时，会自动附加用户信息尾巴（如 `👤 Name (ID: 12345)`），一眼识别发送者。
-  * **便捷回复**：管理员只需**回复 (Reply)** 转发过来的消息，机器人即可将内容（支持文本、图片、文件、语音等）原路转达给对应的用户。
-  * **全员广播**：内置广播系统，管理员可一键向历史所有用户发送通知。
+# 4. 创建 KV namespace，把输出的 id 填入 wrangler.jsonc
+npm run kv:create
 
-### 🌍 智能多语言 (i18n)
+# 5. 设置所有 secrets（交互式）
+npm run secret:setup
+#   或手动:
+#   wrangler secret put BOT_TOKEN
+#   wrangler secret put BOT_SECRET
+#   wrangler secret put ADMIN_UID
+#   wrangler secret put AI_BASE_URL
+#   wrangler secret put AI_API_KEY
 
-  * **双语支持**：完整支持 **中文** 与 **English** 界面。
-  * **自动/手动切换**：用户可在菜单中自主切换语言，机器人也会根据上下文自动适配。
+# 6. 部署
+npm run deploy
 
-### 🔄 “不死鸟”保活机制
+# 7. 注册 webhook（替换 WORKER_URL 和 BOT_SECRET）
+curl -X POST -H "x-bot-secret: BOT_SECRET" https://WORKER_URL/registerWebhook
 
-  * 内置无限重试循环，当遇到网络波动或 Telegram API 暂时不可用导致连接中断时，机器人会自动休眠并重新连接，无需人工干预。
-
------
-
-## 🛠️ 部署指南
-
-### 1\. 前置要求
-
-  * 获取 Telegram Bot Token ([@BotFather](https://t.me/BotFather))
-  * 获取您的数字 Admin ID ([@userinfobot](https://t.me/userinfobot))
-
-### 2\. 环境变量配置 (Environment Variables)
-
-| 变量名 | 必填 | 默认值 / 说明 |
-| :--- | :---: | :--- |
-| **`BOT_TOKEN`** | ✅ | 您的机器人 Token |
-| **`ADMIN_ID`** | ✅ | 管理员的数字 ID |
-| `BOT_DB_PATH` | ❌ | `/app/data/bot_core.db` <br> **强烈建议**在容器部署时指定此路径并挂载卷。 |
-| `REMOTE_SPAM_URL` | ❌ | (内置 GitHub 链接) <br> 您的远程 spam 规则文件直链 (Raw Text)。 |
-| `WELCOME_ZH` | ❌ | (内置欢迎语) 自定义中文欢迎消息。 |
-| `WELCOME_EN` | ❌ | (内置欢迎语) 自定义英文欢迎消息。 |
-| `AUTO_REPLY_ZH` | ❌ | (内置回复) 用户发送消息后的自动回执。 |
-
-### 3\. Docker Compose 部署 (推荐)
-
-为了确保数据持久化，请务必配置**存储卷挂载**。
-
-```yaml
-version: '3'
-services:
-  bot:
-    image: python:3.9-slim
-    container_name: secure_bot
-    restart: always
-    environment:
-      - BOT_TOKEN=your_token_here
-      - ADMIN_ID=your_admin_id
-      - BOT_DB_PATH=/app/data/bot_core.db
-      - TZ=Asia/Shanghai
-    volumes:
-      - ./bot.py:/app/bot.py
-      - ./data:/app/data  # 核心：确保数据库文件持久化
-    working_dir: /app
-    command: sh -c "pip install pyTelegramBotAPI requests && python bot.py"
+# 8. 设置命令菜单
+curl -X POST -H "x-bot-secret: BOT_SECRET" https://WORKER_URL/setcommands
 ```
 
------
+## 修复清单
 
-## 📝 管理员使用手册
+详见 [CHANGES.md](./CHANGES.md)。摘要：
 
-### 1\. 回复消息 (Reply)
+| 轮次 | 修复数 | 关键修复 |
+|------|--------|---------|
+| v0.2 第一轮 | 37 | 凭据泄露 / 验证码暴力 / 提示注入 / IDOR / 媒体绕过 |
+| v0.3 第二轮 | 38 | /start 死循环 / 群聊锁 / 并发竞态 / 可观测性 |
+| v0.4 第三轮 | 20 | CF 免费层适配 / 超时编排 / 转义边界 |
+| v0.5 第四轮 | 8 | 爆破防护 / 全消息类型转发 |
+| v0.6 第五轮 | 8 | 验证绕过 bug / 答案规范化 / AI 防护 |
+| v0.7 第六轮 | 5 | hitRate scope / clearViolations 循环 / 草稿 try/catch |
+| v0.8 第七轮 | 6 | 命令覆盖 / @bot 后缀 / 模糊测试 |
+| v0.8 第八轮 | 3 | ack try/catch / 草稿顺序 / 锁泄漏 |
+| v0.10 第九轮 | 2 | KV 写失败容错 / 缓存写非致命 |
+| **合计** | **127** | — |
 
-收到用户的转发消息后，直接对此消息进行**回复 (Reply)**，机器人会将您的回复内容发送给该用户。
+## 部署步骤
 
-### 2\. 管理命令
+**完整详细步骤请看 [DEPLOY.md](./DEPLOY.md)**。上面已经给出快速版。
 
-所有命令必须通过**回复 (Reply)** 某条用户发来的消息（或者直接发送给机器人）来触发：
+## 本地开发
 
-| 命令 | 功能 | 说明 |
-| :--- | :--- | :--- |
-| **`/ban`** | 封禁用户 | **回复消息使用**。将目标用户封禁 **30天**，期间无法交互。 |
-| **`/unban`** | 解封用户 | **回复消息使用**。立即恢复目标用户的发送权限。 |
-| **`/gb [内容]`** | 全员广播 | **直接发送使用**。向数据库中记录的所有用户群发消息。 |
+详见 [DEPLOY.md 附录 D](./DEPLOY.md#附录-d本地开发)。
 
------
+```bash
+cp .dev.vars.example .dev.vars
+# 编辑 .dev.vars 填入测试值
+npm run dev
+```
 
-## 📈 发展趋势与反馈 (Feedback & Trends)
+注意：本地开发时 `BYPASS_TG_ASN_CHECK=1`，跳过 Telegram ASN 校验。
 
-项目的持续改进离不开您的参与！
+## 隐私与安全
 
-* **遇到 BUG？** 发现机器人有异常行为，请直接提交 [Issues](../../issues) 反馈，我会尽快修复。
-* **有新点子？** 欢迎提出 Feature Request，让机器人变得更强大。
+### 凭据保护
+- 所有敏感信息（BOT_TOKEN / BOT_SECRET / ADMIN_UID / AI_BASE_URL / AI_API_KEY / SEARCH_API_KEY）都通过 `wrangler secret` 设置，不会写入仓库
+- `wrangler.jsonc` 里只有非敏感配置变量
 
-如果这个项目对您有帮助，欢迎点亮一颗 ⭐ Star！
+### 用户隐私保护
+- 用户消息发送给 AI 中转站前会被截断（≤ 1000 字）
+- 拦截记录入库前会脱敏（手机号、邮箱、身份证号、API key、银行卡号）
+- 申诉内容通知管理员时也会脱敏
+- 自动封禁通知不再附带用户原文
 
-[![Star History Chart](https://api.star-history.com/svg?repos=sykin7/tg-private-bot&type=Date)](https://star-history.com/#sykin7/tg-private-bot&Date)
+### 提示注入防御
+- 代笔时把用户上下文标记为不可信 system message
+- AI 输出层检测可疑内容（Telegram 链接、@用户名、加密货币关键词、转账请求等）
+- 命中可疑检测时，草稿仍生成但会向管理员发出警告
 
----
-## ⚠️ 免责声明
+### 访问控制
+- 管理端点必须 POST + `x-bot-secret` header（不再支持 GET query）
+- Webhook 校验使用 `X-Telegram-Bot-Api-Secret-Token` header + 常数时间比较
+- 可选：通过 `request.cf.asn === 62041` 验证请求来自 Telegram 网络
+- `/to <uid>` 命令限制只能发给已知用户（防 IDOR）
 
-本项目仅供技术研究与个人安全防护使用。使用者应遵守当地法律法规及 Telegram 服务条款。请勿用于非法用途。
+### 审计日志
+- 所有管理操作（ban / unban / model 切换 / to 发送 / 草稿发送）都记录到 KV
+- 用 `/audit` 命令查看最近 100 条审计记录
+- 日志保留 90 天
 
+## 已知局限
 
+由于坚持纯 Cloudflare 免费层，以下问题只能做到"近似正确"：
 
+| 局限 | 当前方案 | 残余风险 |
+|------|---------|---------|
+| KV 最终一致 → 限流并发 | list-based 令牌计数 | 高并发下偶发多 1-2 条通过 |
+| KV 最终一致 → 违规计数 | list-based 令牌计数 | 并发拦截可能多算 1-2 次 |
+| KV 最终一致 → update 去重 | 600s TTL KV key | 多区域极端情况下可能重复处理 |
+| KV 最终一致 → 群聊锁 | list-based 令牌锁 + try/finally | 极端情况下锁可能短暂失效 |
+
+如果未来流量上升需要强一致，可升级 Workers Paid（$5/月）+ Durable Objects，**仍在 Cloudflare 生态内**。
+
+## 管理命令
+
+仅 `ADMIN_UID` 可用：
+
+| 命令 | 说明 |
+|------|------|
+| reply 用户消息 + 普通文本 | 直接回复该用户 |
+| reply 用户消息 + `/ai <意向>` | 生成代笔草稿，可确认回复/重新生成/自行回复 |
+| `/ai <问题>` | 与私人助理对话 |
+| `/aimode on` / `/aimode off` | 开启/关闭 AI 模式 |
+| `/model` | 查看当前模型 |
+| `/model list` | 查询中转站可用模型 |
+| `/model <模型名>` | 切换当前模型（只允许字母数字点横杠斜杠冒号，长度 ≤ 100） |
+| `/model default` | 恢复默认模型 |
+| `/to <uid> <内容>` | 主动给指定用户发消息（仅限已知用户） |
+| `/intercepts [数量]` | 查看最近拦截记录（最多 50 条） |
+| `/audit [数量]` | 查看管理员审计日志（最多 100 条） |
+| `/ban <uid>` | 手动封禁用户；也可 reply 后 `/ban` |
+| `/unban <uid>` | 解封用户并清空违规/申诉次数 |
+| `/forgive <uid>` | 清空用户误伤/违规计数 |
+
+被封禁用户可发送：
+
+```
+/appeal <申诉说明>
+```
+
+## 许可
+
+继承原仓库许可。

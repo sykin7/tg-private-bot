@@ -1,0 +1,23 @@
+{
+  "name": "nicechat-bot",
+  "version": "0.10.0",
+  "private": true,
+  "description": "Telegram bidirectional chat bot on Cloudflare Workers — security-hardened fork (v0.10 with KV write failure tolerance).",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "cf-typegen": "wrangler types",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "kv:create": "wrangler kv namespace create TG_BOT_KV",
+    "secret:setup": "bash scripts/setup-secrets.sh"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240909.0",
+    "typescript": "^5.6.2",
+    "vitest": "^4.1.9",
+    "wrangler": "^3.78.0"
+  }
+}
