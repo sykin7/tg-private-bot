@@ -407,21 +407,46 @@ def cleanup_dict():
     while True:
         time.sleep(30)
         now = time.time()
+
         with _flood_lock:
             to_remove = []
+
             for uid, timestamps in list(user_flood_control.items()):
-                valid = [t for t in timestamps if now - t < FLOOD_WINDOW]
-                if not valid: to_remove.append(uid)
-                else: user_flood_control[uid] = valid
-            for uid in to_remove: del user_flood_control[uid]
-            to_remove_grp = []
-            for gid, ts in list(media_group_cache.items()):
-                if now - ts > 5: to_remove_grp.append(gid)
-            for gid in to_remove_grp: del media_group_cache[gid]
-        with _cache_lock:
-            to_del_cache = [k for k, v in user_status_cache.items() if now - v['ts'] > CACHE_TTL]
-            for k in to_del_cache: del user_status_cache[k]
-        if int(now) % 86400 < 60: db_cleanup_map()
+                try:
+                    # 保证 timestamps 始终是 deque
+                    if not isinstance(timestamps, deque):
+                        timestamps = deque(
+                            timestamps,
+                            maxlen=MAX_MSGS_PER_WINDOW + 2
+                        )
+
+                    # 清除过期记录
+                    while timestamps and (now - timestamps[0]) > FLOOD_WINDOW:
+                        timestamps.popleft()
+
+                    if timestamps:
+                        user_flood_control[uid] = timestamps
+                    else:
+                        to_remove.append(uid)
+
+                except Exception:
+                    logging.exception(
+                        f"cleanup_dict(): failed to cleanup flood data for user {uid}"
+                    )
+                    to_remove.append(uid)
+
+            for uid in to_remove:
+                user_flood_control.pop(uid, None)
+
+            # 清理媒体组缓存
+            to_remove_grp = [
+                gid
+                for gid, ts in media_group_cache.items()
+                if now - ts > 5
+            ]
+
+            for gid in to_remove_grp:
+                media_group_cache.pop(gid, None)
 
 def check_global_limit():
     global _global_token_bucket, _last_token_update
@@ -445,7 +470,16 @@ def check_flood(user_id, media_group_id=None):
         if user_id not in user_flood_control:
             user_flood_control[user_id] = deque(maxlen=MAX_MSGS_PER_WINDOW + 2)
         timestamps = user_flood_control[user_id]
-        while len(timestamps) > 0 and now - timestamps[0] > FLOOD_WINDOW:
+        
+        # 防止其他地方把 deque 变成 list
+        if not isinstance(timestamps, deque):
+            timestamps = deque(
+                timestamps,
+                maxlen=MAX_MSGS_PER_WINDOW + 2
+                )
+            user_flood_control[user_id] = timestamps
+        
+        while timestamps and now - timestamps[0] > FLOOD_WINDOW:
             timestamps.popleft()
         timestamps.append(now)
         return len(timestamps) > MAX_MSGS_PER_WINDOW
