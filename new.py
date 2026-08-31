@@ -2106,11 +2106,20 @@ def handle_spamtest_command(message):
     sample = parts[1].strip()
     blocked, score, compact, reason = explain_spam_text(sample)
     status = "会拦截" if blocked else "不会拦截"
+    ai_line = "\nAI: 未启用"
+    if ai_cls.enabled:
+        ai_res = get_ai_spam_result(sample)
+        if ai_res is None:
+            ai_line = "\nAI: 无返回（超时或解析失败，看日志）"
+        else:
+            verdict = "广告" if ai_res.get('is_spam') else "正常"
+            ai_line = f"\nAI: {verdict} - {html.escape(str(ai_res.get('reason') or ''))}"
     reply = (
         f"🧪 <b>广告规则测试</b>\n"
         f"结果：<b>{status}</b>\n"
         f"原因：{html.escape(reason)}\n"
         f"风险分：<code>{score}</code>"
+        f"{ai_line}"
     )
     safe_reply_to(message, reply, parse_mode='HTML')
 
