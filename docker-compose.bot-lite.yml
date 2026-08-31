@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  codexbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/sykin7/spamguard-bot:latest
+    container_name: codexbot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN:?请在 .env 中填写 BOT_TOKEN}
+      ADMIN_ID: ${ADMIN_ID:-}
+      OWNER_ID: ${OWNER_ID:-}
+      BOT_DB_PATH: /app/data/bot_core.db
+      CAPTCHA_TEXT_FALLBACK: ${CAPTCHA_TEXT_FALLBACK:-false}
+      WELCOME_ZH: ${WELCOME_ZH:-}
+      VERIFIED_ZH: ${VERIFIED_ZH:-}
+      AUTO_REPLY_ZH: ${AUTO_REPLY_ZH:-}
+      WELCOME_EN: ${WELCOME_EN:-}
+      VERIFIED_EN: ${VERIFIED_EN:-}
+      AUTO_REPLY_EN: ${AUTO_REPLY_EN:-}
+      REMOTE_SPAM_URL: ${REMOTE_SPAM_URL:-}
+      AI_ENABLED: ${AI_ENABLED:-false}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-gpt-4o-mini}
+      AI_TIMEOUT: ${AI_TIMEOUT:-20}
+      AI_MIN_SCORE: ${AI_MIN_SCORE:-5}
+      AI_ALWAYS_CHECK: ${AI_ALWAYS_CHECK:-false}
+      AI_PROFILE_CHECK: ${AI_PROFILE_CHECK:-true}
+      RULE_LEARN_ENABLED: ${RULE_LEARN_ENABLED:-true}
+      RULE_SYNC_GITHUB_REPO: ${RULE_SYNC_GITHUB_REPO:-}
+      RULE_SYNC_GITHUB_PATH: ${RULE_SYNC_GITHUB_PATH:-}
+      RULE_SYNC_GITHUB_BRANCH: ${RULE_SYNC_GITHUB_BRANCH:-main}
+      RULE_SYNC_GITHUB_TOKEN: ${RULE_SYNC_GITHUB_TOKEN:-}
+      RULE_SYNC_R2_ENDPOINT: ${RULE_SYNC_R2_ENDPOINT:-}
+      RULE_SYNC_R2_BUCKET: ${RULE_SYNC_R2_BUCKET:-}
+      RULE_SYNC_R2_KEY: ${RULE_SYNC_R2_KEY:-}
+      RULE_SYNC_R2_REGION: ${RULE_SYNC_R2_REGION:-auto}
+      RULE_SYNC_R2_ACCESS_KEY: ${RULE_SYNC_R2_ACCESS_KEY:-}
+      RULE_SYNC_R2_SECRET_KEY: ${RULE_SYNC_R2_SECRET_KEY:-}
+      GROUP_ENABLED: ${GROUP_ENABLED:-true}
+      GROUP_JOIN_APPROVE: ${GROUP_JOIN_APPROVE:-true}
+      GROUP_AUTO_APPROVE: ${GROUP_AUTO_APPROVE:-true}
+      GROUP_BAN_ON_SPAM: ${GROUP_BAN_ON_SPAM:-true}
+      GROUP_DELETE_SPAM: ${GROUP_DELETE_SPAM:-true}
+      GROUP_IDS: ${GROUP_IDS:-}
+      GROUP_ADMIN_IDS: ${GROUP_ADMIN_IDS:-}
+    volumes:
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    networks:
+      - bot-network
+
+networks:
+  bot-network:
+    driver: bridge
