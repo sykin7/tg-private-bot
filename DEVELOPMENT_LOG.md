@@ -1,5 +1,78 @@
 # Development Log
 
+## 2026-08-31（群内广告分级：首次删消息+警告，再犯永久封）
+
+### 改动范围
+
+- `new.py`：新增 `GROUP_SPAM_WARN_LIMIT`（默认 1），新增 `should_ban_group_spam` / `get_group_spam_warn_count` / `clear_group_spam_warn` 三个函数，用 `_group_spam_warn_lock` 保护内存计数。
+- 群内命中广告后：强特征词（U币等）任何时候直接永久封；普通广告首次删消息+警告，达到 `GROUP_SPAM_WARN_LIMIT` 再永久封。封禁成功后立即清除计数，避免内存堆积。
+- `.env.example`：补充 `GROUP_SPAM_WARN_LIMIT=1` 及注释。
+
+### 验证证据
+
+- `python -m unittest tests.test_core tests.test_rule_sync`：87 tests OK。
+- `new.py` 语法解析通过。
+
+### 当前状态
+
+- 已完成代码改动与验证，未提交。等 Boss 确认后 push 到 v2 分支触发镜像重建。
+
+### 回滚点
+
+- 本次改动集中在 `new.py` 群内广告封禁段落与 `.env.example`，回滚可直接还原这两个文件的对应段落。
+
+## 2026-08-31（灰色地带交 AI 裁决，单关键词不再直接封）
+
+### 改动范围
+
+- `spam_risk_score`：触达信号（URL/@/电话/联系方式）各 +2，加密信号 +3；营销词按命中数 *2 封顶 6；远程规则命中仅在无营销词时补 +2，避免重复计分；收款/诱导/联系方式三类命中≥2 类再 +3；关键收敛点：只有单个营销词且既无联系方式也无加密信号时 -3，判为讨论不判广告。
+- `ai_classifier.AI_MIN_SCORE` 默认 5 改 3：本地拿不准的灰色分段（达到 3 但不到封禁门槛 6）自动交 AI 裁决，不再本地硬判。
+- `.env.example`：补充 `AI_MIN_SCORE` 注释，说明它是「本地拿不准就问 AI」的门槛。
+
+### 判定分层（内容默认阈值）
+
+- 风险分 >= 6：直接封。
+- 3 <= 风险分 < 6：交 AI 裁决（AI 关闭时放行，避免误封）。
+- 风险分 < 3：直接放行。
+- 强特征词（U 币等）任何时候即时封，不进分段。
+
+### 验证证据
+
+- `python -m unittest tests.test_core tests.test_rule_sync`：87 tests OK。
+- 边界样本：单关键词无联系方式「请问有兼职吗」分 0 放行；带充值/单词带链接分 3-4 交 AI；兼职刷单加微信、博彩返佣等多信号分 9-11 直接封。
+
+### 当前状态
+
+- 已完成代码改动与验证，未提交。等 Boss 确认后 push 到 v2。
+
+### 回滚点
+
+- `D:\CodexProjects\codexbot\codex-config-backup-20260831-211817-scorefix`
+
+## 2026-08-31（广告加权评分治本降误封）
+
+### 改动范围
+
+- `new.py`：远程/学习/兜底规则命中从「一票即封」改为加权。拆出 `keyword_rule_hit`（纯命中判定），`is_spam_text` 保留强特征词即封 + 规则命中（用户名/文件名等短文本入口）。
+- `spam_risk_score`：规则命中 +4 分；新增组合重罚（收款/诱导/联系方式三类信号命中≥2 类再 +3）；新增负权重（纯提问寒暄且无广告组合信号且无链接时 -3），分数下限 0。
+- `classify_spam_text`：强特征词即时封，其余走风险分阈值 `SPAM_BLOCK_SCORE`（默认 6），不再让 8000+ 远程规则子串命中直接封。
+- 阈值全部做成 `.env` 变量：`SPAM_BLOCK_SCORE`（内容判定门槛，默认 6）、`SPAM_PROFILE_BLOCK_SCORE`（资料/用户名/文件名门槛，默认 5，替换原写死的 5）。
+- 新增 `MONEY_RE`/`LURE_RE`/`HAM_RE` 三个信号正则，仅供加权对冲使用。
+- 未新增任何数据库表，学习通道与群/私聊/入群逻辑完全复用，未改行为契约。
+
+### 验证证据
+
+- `python -m unittest tests.test_core tests.test_rule_sync`：87 tests OK。
+- 手工样本核验：正常提问/闲聊/带链接提问均判 False（分 0-3），U币硬广走强特征即封，兼职刷单/博彩/引流带联系方式均判 True（分 15-16）。
+
+### 当前状态
+
+- 已完成代码改动与验证，未提交。等 Boss 确认后 push 到 v2 分支触发镜像重建。
+
+### 回滚点
+
+- `D:\CodexProjects\codexbot\codex-config-backup-20260831-211817-scorefix`
+
 ## 2026-08-31（新镜像名与 v2 分支统一）
 
 ### 改动范围

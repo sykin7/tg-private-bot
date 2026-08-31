@@ -96,6 +96,11 @@ CRYPTO_RE = re.compile(r'usdt|trc20|erc20|充值|提现|收款|付款|钱包|交
 REPEAT_CHAR_RE = re.compile(r'(.)\1{5,}')
 REPEATED_PUNCT_RE = re.compile(r'[!！?？]{2,}')
 
+# 加权评分用信号：收款、诱导、正常聊天。用于组合加权与负权重对冲，治本降误封。
+MONEY_RE = re.compile(r'收款|付款|返佣|佣金|提现|充值|结算|日结|月入|时薪|工资|流水|上岸')
+LURE_RE = re.compile(r'兼职|刷单|加我|私聊|接单|代理|项目|赚钱|变现|包赢|稳赚|躺赚|名额|扫码|进群|加群|开户|上分|下分|盘口')
+HAM_RE = re.compile(r'请问|怎么|为什么|谢谢|多谢|你好|您好|请教|麻烦|不好意思|抱歉|如何|可以吗|是吗|求助|请问一下')
+
 DEFAULT_REMOTE_SPAM_URL = "https://raw.githubusercontent.com/sykin7/my-telegram-spam-rules/refs/heads/main/spam.txt"
 REMOTE_SPAM_URL = os.environ.get('REMOTE_SPAM_URL') or DEFAULT_REMOTE_SPAM_URL
 DB_PATH = os.environ.get('BOT_DB_PATH', '/app/data/bot_core.db')
@@ -123,8 +128,12 @@ RULE_REGEX_MAX_KEYWORDS = _env_int(os.environ.get('RULE_REGEX_MAX_KEYWORDS'), 20
 RULE_REGEX_BATCH_SIZE = _env_int(os.environ.get('RULE_REGEX_BATCH_SIZE'), 2000)
 RULE_EXACT_MAX_TERMS = _env_int(os.environ.get('RULE_EXACT_MAX_TERMS'), 200000)
 RULE_LEARNED_MEMORY_LIMIT = _env_int(os.environ.get('RULE_LEARNED_MEMORY_LIMIT'), 50000)
-AI_KEYWORDS_LIMIT = _env_int(os.environ.get('AI_KEYWORDS_LIMIT'), 2000)
+AI_KEYWORDS_LIMIT = _env_int(os.environ.get('AI_KEYWORDS_LIMIT'), 200)
 MAX_SPAM_KEYWORDS = RULE_REGEX_MAX_KEYWORDS
+# 内容风险分达到该值即判为广告。默认 6，可用 SPAM_BLOCK_SCORE 调松紧。
+SPAM_BLOCK_SCORE = max(1, _env_int(os.environ.get('SPAM_BLOCK_SCORE'), 6))
+# 用户名/资料/文件名等短文本判广告的风险分门槛，默认 5。
+SPAM_PROFILE_BLOCK_SCORE = max(1, _env_int(os.environ.get('SPAM_PROFILE_BLOCK_SCORE'), 5))
 RULE_AUTO_LEARN_ENABLED = os.environ.get('RULE_AUTO_LEARN_ENABLED', 'true').lower() not in ('0', 'false', 'no', 'off')
 RULE_AUTO_LEARN_THRESHOLD = max(2, _env_int(os.environ.get('RULE_AUTO_LEARN_THRESHOLD'), 3))
 RULE_AUTO_LEARN_MAX_RULES = max(1000, _env_int(os.environ.get('RULE_AUTO_LEARN_MAX_RULES'), 200000))
@@ -153,6 +162,9 @@ GROUP_JOIN_REVIEW_TIMEOUT = _env_int(os.environ.get('GROUP_JOIN_REVIEW_TIMEOUT')
 GROUP_JOIN_REQUIRED_CHANNEL = (os.environ.get('GROUP_JOIN_REQUIRED_CHANNEL') or '').strip().lstrip('@')
 GROUP_BAN_ON_SPAM = os.environ.get('GROUP_BAN_ON_SPAM', 'true').lower() in ('1', 'true', 'yes', 'on')
 GROUP_DELETE_SPAM = os.environ.get('GROUP_DELETE_SPAM', 'true').lower() in ('1', 'true', 'yes', 'on')
+# 群内广告命中多少次警告后才永久封。默认 1（首次删消息+警告，再犯永久封）。
+# 设为 0 表示首次命中即永久封（旧行为）。强特征词任何时候直接封，不吃警告。
+GROUP_SPAM_WARN_LIMIT = _env_int(os.environ.get('GROUP_SPAM_WARN_LIMIT'), 1)
 RULE_LEARN_ENABLED = os.environ.get('RULE_LEARN_ENABLED', 'true').lower() in ('1', 'true', 'yes', 'on')
 
 
@@ -186,6 +198,9 @@ _group_join_lock = threading.Lock()
 group_join_pending = {}
 _channel_member_cache = {}
 CHANNEL_MEMBER_CACHE_TTL = 60
+# 群内广告警告计数：{(chat_id, user_id): 命中次数}，用于首次警告、再犯永久封。
+group_spam_warn_state = {}
+_group_spam_warn_lock = threading.Lock()
 
 
 def can_manage_group(user_id, chat_id):
@@ -1373,14 +1388,19 @@ def clear_captcha_wrong_state(user_id):
     with _flood_lock:
         captcha_wrong_state.pop(user_id, None)
 
-def is_spam_text(text):
-    if not text: return False
+def keyword_rule_hit(text):
+    """远程/学习/兜底关键词是否命中（不含强特征词）。
+
+    只做规则命中判定，命中结果交给 spam_risk_score 加权，不再一票即封。
+    """
+    if not text:
+        return False
     text = normalize_text(text)
-    if len(text) > 5000: text = text[:5000]
+    if len(text) > 5000:
+        text = text[:5000]
     text_nospace = re.sub(r'\s+', '', text)
     text_cleaned = re.sub(r'[^\w]', '', text)
     text_compact = normalize_for_spam(text)
-    if has_hard_block_term(text): return True
     if not _spam_regexes and not _spam_exact_text_terms and not _spam_exact_compact_terms:
         load_fallback_spam_rules()
     with _spam_lock:
@@ -1399,22 +1419,44 @@ def is_spam_text(text):
         return True
     return False
 
+def is_spam_text(text):
+    """强特征即封，或命中规则库关键词。用于用户名/文件名等一票判定入口。"""
+    if not text:
+        return False
+    return has_hard_block_term(text) or keyword_rule_hit(text)
+
 def spam_risk_score(text):
     if not text: return 0
     raw = normalize_text(text)
     compact = normalize_for_spam(raw)
     score = 0
-    if URL_RE.search(raw): score += 3
-    if MENTION_RE.search(raw): score += 2
-    if PHONE_RE.search(raw): score += 2
-    if CONTACT_RE.search(raw): score += 2
-    if CRYPTO_RE.search(compact): score += 3
+    has_url = bool(URL_RE.search(raw))
+    has_mention = bool(MENTION_RE.search(raw))
+    has_phone = bool(PHONE_RE.search(raw))
+    has_contact = bool(CONTACT_RE.search(raw))
+    has_crypto = bool(CRYPTO_RE.search(compact))
+    # 触达信号：广告要能被联系上才有意义（链接/@/电话/联系方式）
+    if has_url: score += 2
+    if has_mention: score += 2
+    if has_phone: score += 2
+    if has_contact: score += 2
+    if has_crypto: score += 3
+    reach = has_url or has_mention or has_phone or has_contact
+    # 营销/诱导词命中
     term_hits = sum(1 for term in SPAM_MARKETING_TERMS if normalize_for_spam(term) in compact)
-    score += min(term_hits * 2, 8)
+    score += min(term_hits * 2, 6)
+    # 规则库命中但不在营销词表里的词才补分，避免和 term_hits 重复计分
+    if term_hits == 0 and keyword_rule_hit(raw): score += 2
+    # 组合重罚：收款、诱导、联系方式三类信号同时出现≥2 类才加码
+    has_money = has_crypto or bool(MONEY_RE.search(raw))
+    has_lure = bool(LURE_RE.search(raw))
+    if sum([has_money, has_lure, has_contact]) >= 2: score += 3
     if len(compact) > 80 and term_hits >= 2: score += 2
     if REPEAT_CHAR_RE.search(compact): score += 1
     if len(REPEATED_PUNCT_RE.findall(raw)) >= 2: score += 1
-    return score
+    # 降误封：只有单个营销词、既无触达方式也无加密货币信号，判为讨论而非广告
+    if term_hits <= 1 and not reach and not has_crypto: score -= 3
+    return max(score, 0)
 
 def get_user_profile_text(user):
     if not user:
@@ -1476,10 +1518,11 @@ def classify_spam_text(text, profile_text='', run_ai=True):
     except Exception as e:
         logging.warning(f"Spam risk scoring failed: {e}")
     reasons = []
-    if is_spam_text(raw):
-        reasons.append('关键词命中')
-    if score >= 6:
-        reasons.append(f'风险分 {score} >= 6')
+    # 强特征词（U币等）即时封，其余交给加权分判定，避免长规则库子串误伤
+    if has_hard_block_term(raw):
+        reasons.append('命中强广告特征')
+    elif score >= SPAM_BLOCK_SCORE:
+        reasons.append(f'风险分 {score} >= {SPAM_BLOCK_SCORE}')
     blocked = bool(reasons)
     if not blocked and run_ai and should_run_ai_check(score):
         ai_result = get_ai_spam_result(raw_input, profile_text)
@@ -1508,8 +1551,8 @@ def analyze_spam_message(message, run_ai=True):
     profile_score = 0
     try:
         profile_score = spam_risk_score(profile_text)
-        if profile_score >= 5:
-            return True, max(content_score, profile_score), compact, f'资料风险分 {profile_score} >= 5'
+        if profile_score >= SPAM_PROFILE_BLOCK_SCORE:
+            return True, max(content_score, profile_score), compact, f'资料风险分 {profile_score} >= {SPAM_PROFILE_BLOCK_SCORE}'
     except Exception as e:
         logging.warning(f"Profile spam risk scoring failed: {e}")
     document = getattr(message, 'document', None)
@@ -1519,8 +1562,8 @@ def analyze_spam_message(message, run_ai=True):
             return True, max(content_score, profile_score, document_score), compact, '文件名命中广告关键词'
         try:
             document_score = spam_risk_score(document.file_name)
-            if document_score >= 5:
-                return True, max(content_score, profile_score, document_score), compact, f'文件名风险分 {document_score} >= 5'
+            if document_score >= SPAM_PROFILE_BLOCK_SCORE:
+                return True, max(content_score, profile_score, document_score), compact, f'文件名风险分 {document_score} >= {SPAM_PROFILE_BLOCK_SCORE}'
         except Exception as e:
             logging.warning(f"Document spam risk scoring failed: {e}")
     final_score = max(content_score, profile_score, document_score)
@@ -2470,8 +2513,8 @@ def judge_join_request_spam(user, profile_text, bio=''):
     profile_score = 0
     try:
         profile_score = spam_risk_score(profile_text)
-        if profile_score >= 5:
-            return True, f'资料风险分 {profile_score} >= 5'
+        if profile_score >= SPAM_PROFILE_BLOCK_SCORE:
+            return True, f'资料风险分 {profile_score} >= {SPAM_PROFILE_BLOCK_SCORE}'
     except Exception as e:
         logging.warning(f"Join profile risk scoring failed: {e}")
     if AI_PROFILE_CHECK and should_run_ai_check(profile_score):
@@ -2693,6 +2736,35 @@ def notify_group_spam(chat_id, message, user_id, reason, score, actions):
             logging.warning(f"Group spam notice failed for admin {admin_id}: {e}")
 
 
+def should_ban_group_spam(chat_id, user_id):
+    """群内广告分级：返回 True 表示本次应永久封，False 表示仅警告。
+
+    GROUP_SPAM_WARN_LIMIT<=0 时首次即封；否则先累计警告次数，
+    达到限制后再封。强特征词不走这里，由调用方直接封。
+    """
+    limit = GROUP_SPAM_WARN_LIMIT
+    if limit <= 0:
+        return True
+    with _group_spam_warn_lock:
+        key = (chat_id, user_id)
+        count = group_spam_warn_state.get(key, 0) + 1
+        if count >= limit:
+            group_spam_warn_state[key] = count
+            return True
+        group_spam_warn_state[key] = count
+        return False
+
+
+def get_group_spam_warn_count(chat_id, user_id):
+    with _group_spam_warn_lock:
+        return group_spam_warn_state.get((chat_id, user_id), 0)
+
+
+def clear_group_spam_warn(chat_id, user_id):
+    with _group_spam_warn_lock:
+        group_spam_warn_state.pop((chat_id, user_id), None)
+
+
 def process_group_spam_message(message):
     if not message.from_user or message.from_user.is_bot:
         return
@@ -2714,11 +2786,18 @@ def process_group_spam_message(message):
         except Exception as e:
             logging.warning(f"Group spam delete failed: {e}")
     if GROUP_BAN_ON_SPAM:
-        try:
-            safe_send(bot.ban_chat_member, chat_id, user_id)
-            actions.append('永久封禁')
-        except Exception as e:
-            logging.warning(f"Group spam ban failed for {user_id}: {e}")
+        content = getattr(message, 'text', None) or getattr(message, 'caption', None) or ''
+        # 强特征词（U币等）任何时候直接永久封，不吃警告
+        hard_hit = has_hard_block_term(content)
+        if hard_hit or should_ban_group_spam(chat_id, user_id):
+            try:
+                safe_send(bot.ban_chat_member, chat_id, user_id)
+                actions.append('永久封禁')
+                clear_group_spam_warn(chat_id, user_id)
+            except Exception as e:
+                logging.warning(f"Group spam ban failed for {user_id}: {e}")
+        else:
+            actions.append(f'警告（第 {get_group_spam_warn_count(chat_id, user_id)} 次，再犯永久封）')
     if not actions:
         actions.append('仅通知管理员')
 
