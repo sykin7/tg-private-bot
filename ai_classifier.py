@@ -21,7 +21,7 @@ AI_ENABLED = _env_bool(os.environ.get('AI_ENABLED'))
 AI_BASE_URL = (os.environ.get('AI_BASE_URL') or 'https://api.openai.com/v1').rstrip('/')
 AI_API_KEY = os.environ.get('AI_API_KEY') or ''
 AI_MODEL = os.environ.get('AI_MODEL') or 'gpt-4o-mini'
-AI_TIMEOUT = _env_int(os.environ.get('AI_TIMEOUT'), 20)
+AI_TIMEOUT = _env_int(os.environ.get('AI_TIMEOUT'), 45)
 AI_MIN_SCORE = _env_int(os.environ.get('AI_MIN_SCORE'), 5)
 AI_ALWAYS_CHECK = _env_bool(os.environ.get('AI_ALWAYS_CHECK'))
 AI_PROFILE_CHECK = _env_bool(os.environ.get('AI_PROFILE_CHECK'), True)
@@ -29,7 +29,7 @@ AI_CACHE_TTL = _env_int(os.environ.get('AI_CACHE_TTL'), 300)
 AI_PROVIDER = (os.environ.get('AI_PROVIDER') or 'openai-compatible').strip().lower()
 AI_MAX_TOKENS = _env_int(os.environ.get('AI_MAX_TOKENS'), 300)
 AI_RESPONSE_FORMAT = _env_bool(os.environ.get('AI_RESPONSE_FORMAT'))
-AI_KEYWORDS_LIMIT = _env_int(os.environ.get('AI_KEYWORDS_LIMIT'), 2000)
+AI_KEYWORDS_LIMIT = _env_int(os.environ.get('AI_KEYWORDS_LIMIT'), 200)
 AI_MAX_KEYWORDS = _env_int(os.environ.get('AI_MAX_KEYWORDS'), AI_KEYWORDS_LIMIT)
 
 
@@ -56,11 +56,34 @@ _SYSTEM_PROMPT = (
     "垃圾信息、诈骗、引流或黑灰产内容。\n"
     "判定标准：是否在推广商品、服务、资金盘、博彩、兼职刷单、代开发票、虚拟货币交易、"
     "色情裸聊、办证、定位监听、引流到站外等。正常聊天、求助、寒暄不属于广告。\n"
-    "只输出 JSON，不要输出其他文字，格式："
-    '{"is_spam": true 或 false, "reason": "简短中文原因"}'
+    "严格只输出一行 JSON，禁止任何前缀、后缀、解释、markdown 代码块。格式必须为："
+    '{"is_spam": true, "reason": "简短中文原因"} 或 {"is_spam": false, "reason": "简短中文原因"}'
 )
 
 JSON_BLOCK_RE = re.compile(r'```(?:json)?\s*(.*?)```', re.DOTALL | re.IGNORECASE)
+
+_SPAM_KEY_RE = re.compile(r'"?is_spam"?\s*[:=]\s*"?(true|yes)\b', re.IGNORECASE)
+_HAM_KEY_RE = re.compile(r'"?is_spam"?\s*[:=]\s*"?(false|no)\b', re.IGNORECASE)
+# 中文自然语言兜底，先判否定短语，避免“不是广告”被误判为广告。
+_HAM_TEXT_RE = re.compile(r'(不是|不属于|非|不算|正常)(消息|内容|聊天)?(广告|垃圾|诈骗|spam)?')
+_SPAM_TEXT_RE = re.compile(r'(?<![不非未别])是[一是]?(条|个|则)?(广告|垃圾|诈骗|引流|spam)')
+
+
+def _fallback_from_text(text):
+    """When strict JSON fails, infer a decision from free-form model text."""
+    if not text:
+        return None
+    # 优先看显式 is_spam 键
+    if _SPAM_KEY_RE.search(text):
+        return {'is_spam': True, 'reason': '广告（文本兜底判定）', 'source': 'ai'}
+    if _HAM_KEY_RE.search(text):
+        return {'is_spam': False, 'reason': '正常（文本兜底判定）', 'source': 'ai'}
+    # 再看中文自然语言，否定短语优先
+    if _HAM_TEXT_RE.search(text):
+        return {'is_spam': False, 'reason': '正常（文本兜底判定）', 'source': 'ai'}
+    if _SPAM_TEXT_RE.search(text):
+        return {'is_spam': True, 'reason': '广告（文本兜底判定）', 'source': 'ai'}
+    return None
 
 
 def parse_ai_response(content):
@@ -77,18 +100,18 @@ def parse_ai_response(content):
         start = text.find('{')
         end = text.rfind('}')
         if start < 0 or end <= start:
-            return None
+            return _fallback_from_text(content)
         try:
             data = json.loads(text[start:end + 1])
         except (TypeError, ValueError):
-            return None
+            return _fallback_from_text(content)
     if not isinstance(data, dict):
-        return None
+        return _fallback_from_text(content)
     is_spam = data.get('is_spam')
     if isinstance(is_spam, str):
         is_spam = is_spam.strip().lower() in ('true', '1', 'yes')
     if not isinstance(is_spam, bool):
-        return None
+        return _fallback_from_text(content)
     return {
         'is_spam': is_spam,
         'reason': str(data.get('reason') or ('广告' if is_spam else '正常'))[:200],
@@ -276,7 +299,8 @@ class AIClassifier:
             content = self._extract_response_text(data)
             result = parse_ai_response(content)
             if result is None:
-                logging.warning("AI classify returned unparseable content.")
+                logging.warning("AI classify returned unparseable content: %r",
+                                (content or '')[:300])
                 return None
             self._cache_set(cache_key, result)
             return dict(result, cached=False)

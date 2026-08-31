@@ -1431,13 +1431,35 @@ def get_ai_spam_result(text, profile_text=''):
     text = (text or '').strip()
     if not text:
         return None
-    with _spam_lock:
-        keywords = list(islice(_current_spam_keywords or FALLBACK_SPAM_KEYWORDS, AI_KEYWORDS_LIMIT))
+    keywords = select_ai_keywords(text + ' ' + (profile_text or ''), AI_KEYWORDS_LIMIT)
     try:
         return ai_cls.classify(text, keywords=keywords, profile_text=profile_text)
     except Exception as e:
         logging.warning(f"AI spam check failed: {e}")
         return None
+
+
+def select_ai_keywords(text, limit):
+    """Return only the local rule keywords actually hit by this message.
+
+    只递真正命中当前消息的本地词（更贴合事实，不凑数）。命中数在 limit 以内按实际数量递，
+    超过 limit 才截断。命中判定复用 normalize_for_spam，和本地打分同一套归一化逻辑，几乎零额外开销。
+    """
+    if limit <= 0:
+        return []
+    compact = normalize_for_spam(text or '')
+    if not compact:
+        return []
+    with _spam_lock:
+        pool = list(_current_spam_keywords or FALLBACK_SPAM_KEYWORDS)
+    hit = []
+    for kw in pool:
+        term = normalize_for_spam(str(kw))
+        if term and term in compact:
+            hit.append(kw)
+            if len(hit) >= limit:
+                break
+    return hit
 
 def should_run_ai_check(score):
     if not ai_cls.enabled:

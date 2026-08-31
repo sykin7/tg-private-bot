@@ -336,6 +336,19 @@ class GroupLogicTest(unittest.TestCase):
         self.assertFalse(module.is_group_admin(333))
         self.assertFalse(module.is_group_admin(None))
 
+    def test_select_ai_keywords_only_returns_hits(self):
+        module = NEW_MODULE
+        module._current_spam_keywords = {'办证', 'usdt', '刷单', '博彩', '贷款'}
+        # 命中 usdt 与 博彩，只返回命中的词，不凑数
+        hits = module.select_ai_keywords('低价出USDT，博彩包赢', 200)
+        self.assertEqual(set(hits), {'usdt', '博彩'})
+        # 完全不命中时返回空，不塞无关词
+        self.assertEqual(module.select_ai_keywords('今天天气不错出去走走', 200), [])
+        # 命中数超过 limit 时截断
+        self.assertEqual(len(module.select_ai_keywords('低价出USDT，博彩包赢', 1)), 1)
+        # limit<=0 直接返回空
+        self.assertEqual(module.select_ai_keywords('usdt', 0), [])
+
     def test_can_manage_group_static_admin(self):
         module = NEW_MODULE
         module.GROUP_ADMIN_IDS = {111}
