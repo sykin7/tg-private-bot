@@ -446,6 +446,7 @@ class GroupLogicTest(unittest.TestCase):
             from_user=SimpleNamespace(id=999),
         )
         with mock.patch.object(module, 'user_follows_required_channel', return_value=False), \
+                mock.patch.object(module, 'get_cached_user_status', return_value={'bl': False}), \
                 mock.patch.object(module, 'safe_send') as safe, \
                 mock.patch.object(module, 'judge_join_request_spam') as judge:
             module.handle_chat_join_request(req)
@@ -570,6 +571,7 @@ class GroupAndPrivateRulesTest(unittest.TestCase):
                 mock.patch.object(module, 'analyze_spam_message', return_value=analysis) as analyze, \
                 mock.patch.object(module, 'explain_spam_text') as explain, \
                 mock.patch.object(module, 'db_add_group_ban'), \
+                mock.patch.object(module, 'db_add_to_list'), \
                 mock.patch.object(module, 'safe_delete') as safe_delete, \
                 mock.patch.object(module.bot, 'ban_chat_member') as ban, \
                     mock.patch.object(module, 'notify_group_spam') as notify:
@@ -605,6 +607,7 @@ class GroupAndPrivateRulesTest(unittest.TestCase):
                 mock.patch.object(module, 'get_cached_user_status', return_value={'bl': False}), \
                 mock.patch.object(module, 'analyze_spam_message', return_value=analysis), \
                 mock.patch.object(module, 'db_add_group_ban'), \
+                mock.patch.object(module, 'db_add_to_list'), \
                 mock.patch.object(module, 'safe_delete') as safe_delete, \
                 mock.patch.object(module.bot, 'ban_chat_member') as ban, \
                     mock.patch.object(module, 'notify_group_spam') as notify:
@@ -692,58 +695,222 @@ class GroupAndPrivateRulesTest(unittest.TestCase):
         ai.enabled = False
         self.assertIn('会拦截', reply.call_args.args[1])
 
-    def test_group_manual_ban_and_unban_are_scoped(self):
+    def test_group_manual_ban_and_unban_sync_global_blacklist(self):
         module = NEW_MODULE
         message = self._group_message(user_id=333, text='/ban 999')
         with mock.patch.object(module, 'can_manage_group', return_value=False) as manage, \
                 mock.patch.object(module, 'safe_send') as safe, \
-                mock.patch.object(module, 'db_add_group_ban') as add_ban:
+                mock.patch.object(module, 'db_add_group_ban') as add_ban, \
+                mock.patch.object(module, 'db_add_to_list') as add_global:
             module.handle_group_ban_command(message)
         manage.assert_called_once_with(333, -100123)
         safe.assert_not_called()
         add_ban.assert_not_called()
+        add_global.assert_not_called()
 
         with mock.patch.object(module, 'can_manage_group', return_value=True), \
                 mock.patch.object(module, 'safe_send') as safe, \
                 mock.patch.object(module.bot, 'ban_chat_member') as ban_chat_member, \
                 mock.patch.object(module, 'safe_reply_to'), \
-                mock.patch.object(module, 'db_add_group_ban') as add_ban:
+                mock.patch.object(module, 'get_cached_user_status', return_value={'wl': False}), \
+                mock.patch.object(module, 'db_add_group_ban') as add_ban, \
+                mock.patch.object(module, 'db_add_to_list') as add_global:
             module.handle_group_ban_command(message)
         self.assertEqual(safe.call_args.args, (ban_chat_member, -100123, 999))
         add_ban.assert_called_once_with(-100123, 999)
+        add_global.assert_called_once_with('blacklist', 999)
+
+    def test_group_manual_ban_skips_global_whitelist_user(self):
+        module = NEW_MODULE
+        message = self._group_message(user_id=333, text='/ban 999')
+        with mock.patch.object(module, 'can_manage_group', return_value=True), \
+                mock.patch.object(module, 'safe_send') as safe, \
+                mock.patch.object(module, 'safe_reply_to') as reply, \
+                mock.patch.object(module, 'get_cached_user_status', return_value={'wl': True}), \
+                mock.patch.object(module, 'db_add_group_ban') as add_ban, \
+                mock.patch.object(module, 'db_add_to_list') as add_global:
+            module.handle_group_ban_command(message)
+        safe.assert_not_called()
+        add_ban.assert_not_called()
+        add_global.assert_not_called()
+        self.assertIn('白名单', reply.call_args.args[1])
 
         unban_message = self._group_message(user_id=333, text='/unban 999')
         with mock.patch.object(module, 'can_manage_group', return_value=True), \
                 mock.patch.object(module, 'safe_send') as safe, \
                 mock.patch.object(module.bot, 'unban_chat_member') as unban_chat_member, \
                 mock.patch.object(module, 'safe_reply_to'), \
-                mock.patch.object(module, 'db_remove_group_ban') as remove_ban:
+                mock.patch.object(module, 'db_remove_group_ban', return_value=True) as remove_ban, \
+                mock.patch.object(module, 'db_has_other_group_ban', return_value=False), \
+                mock.patch.object(module, 'db_remove_from_list') as remove_global:
             module.handle_group_unban_command(unban_message)
         self.assertEqual(safe.call_args.args, (unban_chat_member, -100123, 999))
         remove_ban.assert_called_once_with(-100123, 999)
+        remove_global.assert_called_once_with('blacklist', 999)
 
-    def test_group_manual_unban_removes_only_same_group_record(self):
+    def test_group_manual_unban_clears_group_and_global_records(self):
         module = NEW_MODULE
         message = self._group_message(user_id=333, text='/unban 999')
         with mock.patch.object(module, 'can_manage_group', return_value=True), \
                 mock.patch.object(module, 'safe_send') as safe, \
                 mock.patch.object(module.bot, 'unban_chat_member') as unban_chat_member, \
                 mock.patch.object(module, 'safe_reply_to'), \
-                mock.patch.object(module, 'db_remove_group_ban') as remove_ban:
+                mock.patch.object(module, 'db_remove_group_ban', return_value=True) as remove_ban, \
+                mock.patch.object(module, 'db_has_other_group_ban', return_value=False), \
+                mock.patch.object(module, 'db_remove_from_list') as remove_global:
             module.handle_group_unban_command(message)
         self.assertEqual(safe.call_args.args, (unban_chat_member, -100123, 999))
         remove_ban.assert_called_once_with(-100123, 999)
+        remove_global.assert_called_once_with('blacklist', 999)
+
+    def test_group_admin_cannot_clear_global_ban_from_other_group(self):
+        module = NEW_MODULE
+        message = self._group_message(user_id=333, text='/unban 999')
+        with mock.patch.object(module, 'can_manage_group', return_value=True), \
+                mock.patch.object(module, 'safe_send'), \
+                mock.patch.object(module, 'safe_reply_to') as reply, \
+                mock.patch.object(module, 'db_remove_group_ban', return_value=True) as remove_ban, \
+                mock.patch.object(module, 'db_has_other_group_ban', return_value=True), \
+                mock.patch.object(module, 'db_remove_from_list') as remove_global:
+            module.handle_group_unban_command(message)
+        remove_ban.assert_called_once_with(-100123, 999)
+        remove_global.assert_not_called()
+        self.assertIn('最高管理员', reply.call_args.args[1])
+
+    def test_group_admin_cannot_clear_global_ban_without_local_record(self):
+        module = NEW_MODULE
+        message = self._group_message(user_id=333, text='/unban 999')
+        with mock.patch.object(module, 'can_manage_group', return_value=True), \
+                mock.patch.object(module, 'safe_send'), \
+                mock.patch.object(module, 'safe_reply_to') as reply, \
+                mock.patch.object(module, 'db_remove_group_ban', return_value=False), \
+                mock.patch.object(module, 'db_has_other_group_ban', return_value=False), \
+                mock.patch.object(module, 'db_remove_from_list') as remove_global:
+            module.handle_group_unban_command(message)
+        remove_global.assert_not_called()
+        self.assertIn('最高管理员', reply.call_args.args[1])
+
+    def test_main_admin_group_unban_clears_global_without_limit(self):
+        module = NEW_MODULE
+        message = self._group_message(user_id=module.ADMIN_ID or 111, text='/unban 999')
+        original_admin = module.ADMIN_ID
+        module.ADMIN_ID = message.from_user.id
+        try:
+            with mock.patch.object(module, 'can_manage_group', return_value=False), \
+                    mock.patch.object(module, 'safe_send'), \
+                    mock.patch.object(module, 'safe_reply_to'), \
+                    mock.patch.object(module, 'db_remove_group_ban', return_value=False), \
+                    mock.patch.object(module, 'db_has_other_group_ban', return_value=True), \
+                    mock.patch.object(module, 'db_remove_from_list') as remove_global:
+                module.handle_group_unban_command(message)
+            remove_global.assert_called_once_with('blacklist', 999)
+        finally:
+            module.ADMIN_ID = original_admin
 
     def test_group_manual_unban_rejects_non_admin(self):
         module = NEW_MODULE
         message = self._group_message(user_id=333, text='/unban 999')
         with mock.patch.object(module, 'can_manage_group', return_value=False) as manage, \
                 mock.patch.object(module, 'safe_send') as safe, \
-                mock.patch.object(module, 'db_remove_group_ban') as remove_ban:
+                mock.patch.object(module, 'db_remove_group_ban') as remove_ban, \
+                mock.patch.object(module, 'db_remove_from_list') as remove_global:
             module.handle_group_unban_command(message)
         manage.assert_called_once_with(333, -100123)
         safe.assert_not_called()
         remove_ban.assert_not_called()
+        remove_global.assert_not_called()
+
+    def test_global_blacklisted_group_message_banned_everywhere(self):
+        module = NEW_MODULE
+        message = self._group_message(user_id=999, text='正常聊天')
+        original_delete = module.GROUP_DELETE_SPAM
+        module.GROUP_DELETE_SPAM = True
+        try:
+            with mock.patch.object(module, 'can_manage_group', return_value=False), \
+                    mock.patch.object(module, 'get_cached_user_status', return_value={'bl': True}), \
+                    mock.patch.object(module, 'analyze_spam_message') as analyze, \
+                    mock.patch.object(module, 'safe_delete') as safe_delete, \
+                    mock.patch.object(module, 'safe_send') as safe, \
+                    mock.patch.object(module.bot, 'ban_chat_member') as ban, \
+                    mock.patch.object(module, 'db_add_group_ban') as add_ban, \
+                    mock.patch.object(module, 'notify_group_spam') as notify:
+                module.process_group_spam_message(message)
+            analyze.assert_not_called()
+            safe_delete.assert_called_once_with(-100123, 7)
+            self.assertEqual(safe.call_args.args, (ban, -100123, 999))
+            add_ban.assert_not_called()
+            notify.assert_called_once_with(-100123, message, 999, '全局黑名单用户', 0, ['永久封禁'], learn=False)
+        finally:
+            module.GROUP_DELETE_SPAM = original_delete
+
+    def test_global_blacklisted_join_request_declined(self):
+        module = NEW_MODULE
+        user = SimpleNamespace(id=999, first_name='Ad', last_name='', username='ad', is_bot=False)
+        req = SimpleNamespace(chat=SimpleNamespace(id=-100123, type='supergroup'), from_user=user, bio='')
+        original = {'enabled': module.GROUP_ENABLED, 'approve': module.GROUP_JOIN_APPROVE, 'ids': module.GROUP_IDS}
+        module.GROUP_ENABLED = True
+        module.GROUP_JOIN_APPROVE = True
+        module.GROUP_IDS = set()
+        try:
+            with mock.patch.object(module, 'get_cached_user_status', return_value={'bl': True}), \
+                    mock.patch.object(module, 'judge_join_request_spam') as judge, \
+                    mock.patch.object(module, 'user_follows_required_channel') as follows, \
+                    mock.patch.object(module, 'safe_send') as safe, \
+                    mock.patch.object(module, 'db_add_group_ban') as add_ban, \
+                    mock.patch.object(module, 'notify_group_join_admins') as notify:
+                module.handle_chat_join_request(req)
+            judge.assert_not_called()
+            follows.assert_not_called()
+            add_ban.assert_not_called()
+            self.assertEqual(
+                [call.args[0].__name__ for call in safe.call_args_list],
+                ['decline_chat_join_request', 'ban_chat_member'],
+            )
+            notify.assert_called_once_with(-100123, user, True, '全局黑名单用户', 'declined')
+        finally:
+            module.GROUP_ENABLED = original['enabled']
+            module.GROUP_JOIN_APPROVE = original['approve']
+            module.GROUP_IDS = original['ids']
+
+    def test_global_whitelisted_group_message_skips_spam_check(self):
+        module = NEW_MODULE
+        message = self._group_message(user_id=888, text='加V telegram.me/ad 优惠')
+        with mock.patch.object(module, 'can_manage_group', return_value=False), \
+                mock.patch.object(module, 'get_cached_user_status', return_value={'bl': False, 'wl': True}), \
+                mock.patch.object(module, 'analyze_spam_message') as analyze, \
+                mock.patch.object(module, 'safe_delete') as safe_delete, \
+                mock.patch.object(module, 'notify_group_spam') as notify:
+            module.process_group_spam_message(message)
+        analyze.assert_not_called()
+        safe_delete.assert_not_called()
+        notify.assert_not_called()
+
+    def test_global_whitelisted_join_request_approved(self):
+        module = NEW_MODULE
+        user = SimpleNamespace(id=888, first_name='VIP', last_name='', username='vip', is_bot=False)
+        req = SimpleNamespace(chat=SimpleNamespace(id=-100123, type='supergroup'), from_user=user, bio='')
+        original = {'enabled': module.GROUP_ENABLED, 'approve': module.GROUP_JOIN_APPROVE, 'ids': module.GROUP_IDS}
+        module.GROUP_ENABLED = True
+        module.GROUP_JOIN_APPROVE = True
+        module.GROUP_IDS = set()
+        try:
+            with mock.patch.object(module, 'get_cached_user_status', return_value={'bl': False, 'wl': True}), \
+                    mock.patch.object(module, 'judge_join_request_spam') as judge, \
+                    mock.patch.object(module, 'user_follows_required_channel') as follows, \
+                    mock.patch.object(module, 'safe_send') as safe, \
+                    mock.patch.object(module, 'notify_group_join_admins', return_value=1) as notify:
+                module.handle_chat_join_request(req)
+            judge.assert_not_called()
+            follows.assert_not_called()
+            self.assertEqual(
+                [call.args[0].__name__ for call in safe.call_args_list],
+                ['approve_chat_join_request'],
+            )
+            notify.assert_called_once_with(-100123, user, False, '全局白名单用户', 'approved')
+        finally:
+            module.GROUP_ENABLED = original['enabled']
+            module.GROUP_JOIN_APPROVE = original['approve']
+            module.GROUP_IDS = original['ids']
 
     def test_group_join_callback_skips_already_handled(self):
         module = NEW_MODULE

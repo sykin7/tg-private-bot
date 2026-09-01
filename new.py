@@ -968,6 +968,13 @@ def db_remove_group_ban(chat_id, user_id):
         conn.commit()
         return cur.rowcount > 0
 
+def db_has_other_group_ban(chat_id, user_id):
+    """该用户是否还被其他群封禁，用于判断群管理员能否解除全局黑名单。"""
+    with _db_lock:
+        conn = get_db_conn()
+        cur = db_execute(conn, "SELECT 1 FROM group_bans WHERE user_id=? AND chat_id<>? LIMIT 1", (user_id, chat_id))
+        return cur.fetchone() is not None
+
 def db_get_list(table_name):
     if table_name not in ('whitelist', 'blacklist'): return []
     with _db_lock:
@@ -2216,10 +2223,15 @@ def handle_group_ban_command(message):
     if user_id is None:
         safe_reply_to(message, "用法：<code>/ban 用户ID</code>，或回复对方消息后发送 <code>/ban</code>", parse_mode='HTML')
         return
+    if message.from_user.id != ADMIN_ID and get_cached_user_status(user_id).get('wl'):
+        # 群管理员不能动全局白名单用户。
+        safe_reply_to(message, f"ℹ️ ID {user_id} 在全局白名单中，需要最高管理员处理。")
+        return
     try:
         safe_send(bot.ban_chat_member, chat_id, user_id)
         db_add_group_ban(chat_id, user_id)
-        text = f"✅ ID {user_id} 已在当前群拉黑。"
+        db_add_to_list('blacklist', user_id)
+        text = f"✅ ID {user_id} 已在当前群拉黑，并已加入全局黑名单。"
     except Exception as e:
         logging.warning(f"Group manual ban failed for {user_id} in {chat_id}: {e}")
         text = "⚠️ 拉黑失败，请确认机器人有封禁成员权限。"
@@ -2247,7 +2259,8 @@ def handle_group_unban_command(message):
     if message.chat.type not in ('group', 'supergroup'):
         return
     chat_id, user_id = group_command_target(message)
-    if message.from_user.id != ADMIN_ID and not can_manage_group(message.from_user.id, chat_id):
+    is_main_admin = message.from_user.id == ADMIN_ID
+    if not is_main_admin and not can_manage_group(message.from_user.id, chat_id):
         return
     if user_id is None:
         safe_reply_to(message, "用法：<code>/unban 用户ID</code>", parse_mode='HTML')
@@ -2256,8 +2269,14 @@ def handle_group_unban_command(message):
         safe_send(bot.unban_chat_member, chat_id, user_id)
     except Exception as e:
         logging.warning(f"Group manual unban failed for {user_id} in {chat_id}: {e}")
-    db_remove_group_ban(chat_id, user_id)
-    safe_reply_to(message, f"✅ ID {user_id} 已解除当前群拉黑。")
+    banned_here = db_remove_group_ban(chat_id, user_id)
+    # 群管理员只能解除本群封进去的全局黑名单，且该用户没被其他群封禁；ADMIN_ID 不受限制。
+    if is_main_admin or (banned_here and not db_has_other_group_ban(chat_id, user_id)):
+        cleared = db_remove_from_list('blacklist', user_id)
+        text = f"✅ ID {user_id} 已解除当前群拉黑" + ("，同时已移出全局黑名单。" if cleared else "。")
+    else:
+        text = f"✅ ID {user_id} 已解除当前群拉黑；该用户的全局黑名单由其他群或管理员添加，需要最高管理员私聊 <code>/dbl {user_id}</code> 解除。"
+    safe_reply_to(message, text, parse_mode='HTML')
 
 @bot.message_handler(commands=['reloadrules'])
 def handle_reload_rules_command(message):
@@ -2653,6 +2672,21 @@ def user_follows_required_channel(user_id):
     return follows
 
 
+def enforce_global_ban(chat_id, user_id, message_id=None):
+    """全局黑名单用户在任意群直接封禁。不写 group_bans：这是执行全局决定，不算该群自己封的。"""
+    if message_id and GROUP_DELETE_SPAM:
+        try:
+            safe_delete(chat_id, message_id)
+        except Exception as e:
+            logging.warning(f"Global blacklist delete failed for {user_id} in {chat_id}: {e}")
+    try:
+        safe_send(bot.ban_chat_member, chat_id, user_id)
+        return True
+    except Exception as e:
+        logging.warning(f"Global blacklist ban failed for {user_id} in {chat_id}: {e}")
+        return False
+
+
 def reject_spam_join(chat_id, user_id):
     safe_send(bot.decline_chat_join_request, chat_id, user_id)
     try:
@@ -2780,6 +2814,28 @@ def handle_chat_join_request(req):
     if not group_enabled_for(chat_id):
         return
     user_id = user.id
+    status = get_cached_user_status(user_id)
+    if status.get('bl'):
+        # 全局黑名单：任何群的加入申请直接拒绝并在该群封禁。
+        try:
+            safe_send(bot.decline_chat_join_request, chat_id, user_id)
+        except Exception as e:
+            logging.warning(f"Global blacklist decline failed for {user_id} in {chat_id}: {e}")
+        enforce_global_ban(chat_id, user_id)
+        notify_group_join_admins(chat_id, user, True, '全局黑名单用户', 'declined')
+        return
+    if status.get('wl'):
+        # 全局白名单：直接通过，不查频道关注也不查广告。
+        try:
+            safe_send(bot.approve_chat_join_request, chat_id, user_id)
+            action = 'approved'
+        except Exception as e:
+            logging.warning(f"Whitelist join approve failed for {user_id} in {chat_id}: {e}")
+            action = 'pending'
+        notice_message_id = notify_group_join_admins(chat_id, user, False, '全局白名单用户', action)
+        if action == 'pending':
+            record_group_join_pending(chat_id, user_id, False, notice_message_id)
+        return
     if GROUP_JOIN_REQUIRED_CHANNEL and not user_follows_required_channel(user_id):
         try:
             safe_send(bot.decline_chat_join_request, chat_id, user_id)
@@ -2822,7 +2878,7 @@ def handle_chat_join_request(req):
         record_group_join_pending(chat_id, user_id, is_spam, notice_message_id)
 
 
-def notify_group_spam(chat_id, message, user_id, reason, score, actions):
+def notify_group_spam(chat_id, message, user_id, reason, score, actions, learn=True):
     content = getattr(message, 'text', None) or getattr(message, 'caption', None) or ''
     action_text = '、'.join(actions)
     msg = (
@@ -2835,7 +2891,7 @@ def notify_group_spam(chat_id, message, user_id, reason, score, actions):
     )
     if content:
         msg += f"\n内容摘要: {html.escape(content[:200])}"
-    content_hash = db_save_spam_feedback(content, 'group')
+    content_hash = db_save_spam_feedback(content, 'group') if learn else None
     markup = None
     if content_hash:
         markup = InlineKeyboardMarkup()
@@ -2885,7 +2941,16 @@ def process_group_spam_message(message):
     user_id = message.from_user.id
     if can_manage_group(user_id, message.chat.id):
         return
-    if get_cached_user_status(user_id).get('bl'):
+    status = get_cached_user_status(user_id)
+    if status.get('bl'):
+        # 全局黑名单用户在任何群都直接清理，不再走规则分析。
+        chat_id = message.chat.id
+        if enforce_global_ban(chat_id, user_id, message.message_id):
+            # 不学习这条内容：命中的是身份而不是广告特征。
+            notify_group_spam(chat_id, message, user_id, '全局黑名单用户', 0, ['永久封禁'], learn=False)
+        return
+    if status.get('wl'):
+        # 全局白名单用户群里也不查广告，和私聊保持一致。
         return
     blocked, score, compact, reason = analyze_spam_message(message)
     if not blocked:
@@ -2907,6 +2972,7 @@ def process_group_spam_message(message):
             try:
                 safe_send(bot.ban_chat_member, chat_id, user_id)
                 db_add_group_ban(chat_id, user_id)
+                db_add_to_list('blacklist', user_id)
                 actions.append('永久封禁')
                 clear_group_spam_warn(chat_id, user_id)
             except Exception as e:
