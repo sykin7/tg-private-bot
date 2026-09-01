@@ -473,6 +473,7 @@ def init_db():
         db_execute(conn, '''CREATE INDEX IF NOT EXISTS idx_map_created ON message_map(created_at)''')
         db_execute(conn, '''CREATE TABLE IF NOT EXISTS whitelist (user_id BIGINT PRIMARY KEY, added_at DOUBLE PRECISION)''')
         db_execute(conn, '''CREATE TABLE IF NOT EXISTS blacklist (user_id BIGINT PRIMARY KEY, added_at DOUBLE PRECISION)''')
+        db_execute(conn, '''CREATE TABLE IF NOT EXISTS group_bans (chat_id BIGINT NOT NULL, user_id BIGINT NOT NULL, added_at DOUBLE PRECISION NOT NULL, PRIMARY KEY (chat_id, user_id))''')
         db_execute(conn, '''CREATE TABLE IF NOT EXISTS spam_feedback (
             content_hash TEXT PRIMARY KEY,
             features TEXT NOT NULL,
@@ -949,6 +950,23 @@ def db_remove_from_list(table_name, user_id):
         success = cur.rowcount > 0
     if success: invalidate_cache(user_id)
     return success
+
+def db_add_group_ban(chat_id, user_id):
+    with _db_lock:
+        conn = get_db_conn()
+        db_execute(
+            conn,
+            "INSERT OR REPLACE INTO group_bans (chat_id, user_id, added_at) VALUES (?, ?, ?)",
+            (chat_id, user_id, time.time()),
+        )
+        conn.commit()
+
+def db_remove_group_ban(chat_id, user_id):
+    with _db_lock:
+        conn = get_db_conn()
+        cur = db_execute(conn, "DELETE FROM group_bans WHERE chat_id=? AND user_id=?", (chat_id, user_id))
+        conn.commit()
+        return cur.rowcount > 0
 
 def db_get_list(table_name):
     if table_name not in ('whitelist', 'blacklist'): return []
@@ -2132,15 +2150,14 @@ def run_r2_mirror_loop():
 
 @bot.message_handler(commands=['id'])
 def handle_id_command(message):
-    if message.chat.type != 'private': return
     lang = get_user_lang(message.from_user.id)
     text = f"🆔 Your Telegram numeric ID is: <code>{message.from_user.id}</code>" if lang == 'en' else f"🆔 你的 Telegram 数字 ID 是：<code>{message.from_user.id}</code>"
     safe_reply_to(message, text, parse_mode='HTML')
 
 @bot.message_handler(commands=['spamtest'])
 def handle_spamtest_command(message):
-    if message.chat.type != 'private': return
-    if message.from_user.id != ADMIN_ID: return
+    if message.chat.type == 'private' and message.from_user.id != ADMIN_ID: return
+    if message.chat.type not in ('private', 'group', 'supergroup'): return
     lang = get_user_lang(message.from_user.id)
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
@@ -2168,14 +2185,88 @@ def handle_spamtest_command(message):
 
 @bot.message_handler(commands=['status'])
 def handle_status_command(message):
-    if message.chat.type != 'private': return
-    if message.from_user.id != ADMIN_ID: return
+    if message.chat.type == 'private':
+        if message.from_user.id != ADMIN_ID: return
+    elif message.chat.type in ('group', 'supergroup'):
+        if not can_manage_group(message.from_user.id, message.chat.id): return
+    else:
+        return
     send_admin_status(message)
+
+def group_command_target(message):
+    if message.chat.type not in ('group', 'supergroup'):
+        return None, None
+    parts = message.text.split()
+    if len(parts) >= 2:
+        try:
+            return message.chat.id, int(parts[1])
+        except (TypeError, ValueError):
+            return message.chat.id, None
+    reply_user = getattr(getattr(message, 'reply_to_message', None), 'from_user', None)
+    return message.chat.id, getattr(reply_user, 'id', None)
+
+@bot.message_handler(
+    commands=['ban'],
+    func=lambda m: m.chat.type in ('group', 'supergroup'),
+)
+def handle_group_ban_command(message):
+    chat_id, user_id = group_command_target(message)
+    if message.from_user.id != ADMIN_ID and not can_manage_group(message.from_user.id, chat_id):
+        return
+    if user_id is None:
+        safe_reply_to(message, "用法：<code>/ban 用户ID</code>，或回复对方消息后发送 <code>/ban</code>", parse_mode='HTML')
+        return
+    try:
+        safe_send(bot.ban_chat_member, chat_id, user_id)
+        db_add_group_ban(chat_id, user_id)
+        text = f"✅ ID {user_id} 已在当前群拉黑。"
+    except Exception as e:
+        logging.warning(f"Group manual ban failed for {user_id} in {chat_id}: {e}")
+        text = "⚠️ 拉黑失败，请确认机器人有封禁成员权限。"
+    safe_reply_to(message, text)
+
+@bot.message_handler(commands=['unban'])
+def handle_group_unban_command(message):
+    if message.chat.type == 'private':
+        if message.from_user.id != ADMIN_ID: return
+        parts = message.text.split()
+        target_uid = None
+        if len(parts) >= 2:
+            try: target_uid = int(parts[1].strip())
+            except (TypeError, ValueError):
+                admin_usage(message, "ID 必须是纯数字，例如：<code>/unban 123456789</code>")
+                return
+        else:
+            target_uid = admin_reply_target(message)
+        if not target_uid:
+            admin_usage(message, "用法：<code>/unban 用户ID</code>，或回复用户转发消息发送 <code>/unban</code>")
+            return
+        db_unban_user(target_uid)
+        safe_reply_to(message, f"✅ ID {target_uid} 已解除临时封禁。")
+        return
+    if message.chat.type not in ('group', 'supergroup'):
+        return
+    chat_id, user_id = group_command_target(message)
+    if message.from_user.id != ADMIN_ID and not can_manage_group(message.from_user.id, chat_id):
+        return
+    if user_id is None:
+        safe_reply_to(message, "用法：<code>/unban 用户ID</code>", parse_mode='HTML')
+        return
+    try:
+        safe_send(bot.unban_chat_member, chat_id, user_id)
+    except Exception as e:
+        logging.warning(f"Group manual unban failed for {user_id} in {chat_id}: {e}")
+    db_remove_group_ban(chat_id, user_id)
+    safe_reply_to(message, f"✅ ID {user_id} 已解除当前群拉黑。")
 
 @bot.message_handler(commands=['reloadrules'])
 def handle_reload_rules_command(message):
-    if message.chat.type != 'private': return
-    if message.from_user.id != ADMIN_ID: return
+    if message.chat.type == 'private':
+        if message.from_user.id != ADMIN_ID: return
+    elif message.chat.type in ('group', 'supergroup'):
+        if not can_manage_group(message.from_user.id, message.chat.id): return
+    else:
+        return
     send_admin_reload_rules(message)
 
 @bot.message_handler(commands=['resetverify'])
@@ -2417,8 +2508,30 @@ def handle_spam_learn_callback(call):
 
 @bot.message_handler(commands=['start', 'help', 'menu'])
 def send_welcome_handler(message):
-    if message.chat.type != 'private': return
     user_id = message.from_user.id
+    if message.chat.type in ('group', 'supergroup'):
+        cmd = message.text.split()[0].split('@', 1)[0].lower()
+        if cmd != '/help':
+            return
+        if get_user_lang(user_id) == 'en':
+            help_msg = (
+                "📚 <b>Group commands</b>\n"
+                "• <code>/id</code>: Show Telegram ID\n"
+                "• <code>/help</code>: This help\n"
+                "• <code>/spamtest text</code>: Test spam rules\n\n"
+                "Group admins: <code>/status</code>, <code>/reloadrules</code>, <code>/ban</code>, <code>/unban</code>"
+            )
+        else:
+            help_msg = (
+                "📚 <b>群内指令</b>\n"
+                "• <code>/id</code>: 查看数字 ID\n"
+                "• <code>/help</code>: 本帮助\n"
+                "• <code>/spamtest 内容</code>: 测试广告规则\n\n"
+                "群管理员：<code>/status</code>、<code>/reloadrules</code>、<code>/ban</code>、<code>/unban</code>"
+            )
+        safe_reply_to(message, help_msg, parse_mode='HTML')
+        return
+    if message.chat.type != 'private': return
     db_touch_user(user_id)
     user_status = get_cached_user_status(user_id)
     if user_status['bl']: return
@@ -2544,6 +2657,7 @@ def reject_spam_join(chat_id, user_id):
     safe_send(bot.decline_chat_join_request, chat_id, user_id)
     try:
         safe_send(bot.ban_chat_member, chat_id, user_id)
+        db_add_group_ban(chat_id, user_id)
     except Exception as e:
         logging.warning(f"Join spam ban failed for {user_id} in {chat_id}: {e}")
     try:
@@ -2792,6 +2906,7 @@ def process_group_spam_message(message):
         if hard_hit or should_ban_group_spam(chat_id, user_id):
             try:
                 safe_send(bot.ban_chat_member, chat_id, user_id)
+                db_add_group_ban(chat_id, user_id)
                 actions.append('永久封禁')
                 clear_group_spam_warn(chat_id, user_id)
             except Exception as e:
