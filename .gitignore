@@ -10,3 +10,5 @@ data/
 *.db
 *.sqlite
 *.sqlite3
+DEVELOPMENT_LOG.md
+backups/
